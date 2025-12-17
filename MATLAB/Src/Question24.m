@@ -1,0 +1,10 @@
+clear;
+fpts=[0.35,0.45];
+mag=[1,0];
+dev=[0.01,0.01];
+[N,Wn,beta,ftype]=kaiserord(fpts,mag,dev);
+kw=kaiser(N+1,beta);
+b=fir1(N,Wn, kw);
+[h,omega]=freqz(b,1,512);
+plot(omega/pi,20*log10(abs(h)));grid;
+xlabel('\omega/\pi'); ylabel('Gain, dB');

@@ -1,0 +1,10 @@
+clear;
+N=input('Type in the order N = ');
+Wn=input('Type in the 3-dB cutoff frequency Wn = ');
+Rp=input('Type in the the passband ripple Rp = ');
+Rs=input('Type in the the minimum stopband attenuation Rs = ');
+[num,den]=ellip(N,Rp,Rs,Wn,'s');
+w=0:5*Wn;
+h=freqs(num,den,w);
+plot(w,20*log10(abs(h))),grid;
+xlabel('Frequency, Hz'); ylabel('Gain, dB');

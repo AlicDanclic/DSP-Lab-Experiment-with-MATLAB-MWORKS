@@ -1,0 +1,10 @@
+n=0:29;
+x=0.2*exp((0.4+1i*0.5)*n);
+subplot(211);
+stem(n,real(x));
+xlabel('n');ylabel('real part');
+grid on;
+subplot(212);
+stem(n,imag(x));
+xlabel('n');ylabel('imag part');
+grid on;

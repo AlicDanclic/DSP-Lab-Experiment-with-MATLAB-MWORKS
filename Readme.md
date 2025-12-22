@@ -4,7 +4,7 @@
 
 ### 前言
 
-
+貌似MWORKS的题目有更新?如第四题的$\omega_s = 0.35\pi / 0.5\pi$,
 
 ### MATLAB和MWORKS效果图对比
 
@@ -19,8 +19,9 @@
 
 <p align="center">
   <img src="./Bitmap/MATLAB02-4-1000.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
-  <img src="./Bitmap/MWORKS02.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
+  <img src="./Bitmap/MWORKS02-4-1000.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
 </p>
+
 
 
 ### Question 3
@@ -74,7 +75,7 @@
   <img src="./Bitmap/MWORKS09.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
 </p>
 
-### Question 10
+### Question 10 
 
 <p align="center">
   <img src="./Bitmap/MATLAB10-4-1000-2-3.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
@@ -235,26 +236,25 @@
   <img src="./Bitmap/MATLAB32.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
   <img src="./Bitmap/MWORKS32.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
 </p>
-
 ### Question 33
+
+<p align="center">
+  <img src="./Bitmap/MATLAB33*.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
+  <img src="./Bitmap/MWORKS330.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
+</p>
+
+### Question 34
 
 <p align="center">
   <img src="./Bitmap/MATLAB33.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
   <img src="./Bitmap/MWORKS33.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
 </p>
 
-### Question 34
+### Question 35
 
 <p align="center">
   <img src="./Bitmap/MATLAB34.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
   <img src="./Bitmap/MWORKS34.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
-</p>
-
-### Question 35
-
-<p align="center">
-  <img src="./Bitmap/MATLAB35.png" style="width:45%; margin-right:4%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
-  <img src="./Bitmap/MWORKS35.png" style="width:45%; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.15);"/>
 </p>
 
 ### Question 36

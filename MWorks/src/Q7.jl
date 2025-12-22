@@ -40,8 +40,8 @@ println("\n合并后的有理形式 H_rational(z):")
 println(H_simplified)
 
 println("\n----------- 分子与分母 -----------")
-println("分子 N(z): ", num)
-println("分母 D(z): ", den)
+println("分子 N(z): ", 5.76*num)
+println("分母 D(z): ", 5.76*den)
 
 # 如果需要转换回 z^-1 的形式 (DSP 中常用)，可以上下同除以 z 的最高次幂
 # 这里主要展示数学上的有理多项式形式

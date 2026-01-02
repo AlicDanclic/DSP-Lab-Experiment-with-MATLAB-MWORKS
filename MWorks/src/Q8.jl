@@ -1,96 +1,97 @@
-import Pkg
-
-# ---------------------------------------------------------
-# 依赖检查
-# ---------------------------------------------------------
-# 检查并安装 DSP 库
-try
-    using DSP
-catch
-    println("正在安装 DSP 包...")
-    Pkg.add("DSP")
-    using DSP
-end
-
-# 加载 TyPlot (MWorks 原生绘图库)
+using DSP
 using TyPlot
+using Printf
 
-# ---------------------------------------------------------
-# 1. 定义滤波器性能指标
-# ---------------------------------------------------------
-# 归一化频率 (ω/π)
-# 注意：DSP.jl 的 buttord 函数要求带通频率范围必须是 Tuple (元组)，不能是 Vector [向量]
-wp = (0.4, 0.6)      # 通带截止频率 (使用圆括号)
-ws = (0.3, 0.7)      # 阻带截止频率 (使用圆括号)
-Rp = 0.6             # 通带最大波纹 (dB)
-Rs = 35              # 阻带最小衰减 (dB)
+println("=== 巴特沃兹 IIR 带通滤波器设计 ===")
 
-println("正在计算滤波器参数...")
+# ==========================================
+# 1. 定义性能指标
+# ==========================================
+# 归一化频率 (1.0 = π)
+wp = (0.4, 0.6)      # 通带范围
+ws = (0.3, 0.7)      # 阻带范围
+Rp_dB = 0.6          # 通带波纹 (dB)
+Rs_dB = 35.0         # 最小阻带衰减 (dB)
 
-# ---------------------------------------------------------
-# 2. 计算巴特沃兹滤波器参数
-# ---------------------------------------------------------
-# buttord(wp::Tuple, ws::Tuple, Rp, Rs)
-N, Wn = buttord(wp, ws, Rp, Rs)
+# 将 dB 指标转换为线性幅度以便绘图
+# 通带最小幅度: 10^(-0.6/20)
+mag_pass_min = 10^(-Rp_dB / 20)
+# 阻带最大幅度: 10^(-35/20)
+mag_stop_max = 10^(-Rs_dB / 20)
 
-println("----------- 设计结果 -----------")
-println("滤波器类型: Butterworth IIR Bandpass")
-println("计算得到的阶数 N: ", N)
-println("3dB 截止频率 Wn: ", Wn)
+println("指标参数:")
+println("  通带频率: $(wp[1])π 到 $(wp[2])π")
+println("  阻带频率: <$(ws[1])π 和 >$(ws[2])π")
+println("  通带波纹: $Rp_dB dB (线性幅度 > $(round(mag_pass_min, digits=4)))")
+println("  阻带衰减: $Rs_dB dB (线性幅度 < $(round(mag_stop_max, digits=5)))")
 
-# ---------------------------------------------------------
+# ==========================================
+# 2. 计算阶数和截止频率
+# ==========================================
+# buttord 返回最小阶数 N 和 3dB 截止频率 Wn
+N, Wn = buttord(wp, ws, Rp_dB, Rs_dB)
+
+println("\n设计结果:")
+println("  滤波器阶数 N: $N")
+println("  3dB 截止频率 Wn: $(round.(Wn, digits=4))")
+
+# ==========================================
 # 3. 设计滤波器
-# ---------------------------------------------------------
-# Wn 返回的也是 Tuple，直接通过索引访问
+# ==========================================
 responsetype = Bandpass(Wn[1], Wn[2])
 designmethod = Butterworth(N)
 filter_system = digitalfilter(responsetype, designmethod)
 
-# ---------------------------------------------------------
-# 4. 分析频率响应
-# ---------------------------------------------------------
-num_points = 1024
-w_vals = range(0, π, length=num_points)
+println("  滤波器设计完成。")
 
-# 计算频率响应
-H = freqz(filter_system, w_vals)
-mag_db = 20 * log10.(abs.(H))
+# ==========================================
+# 4. 计算频率响应并绘图 (线性幅度)
+# ==========================================
+# 定义频率向量
+w_range = range(0, stop=pi, length=1024)
+h_resp = freqz(filter_system, w_range)
 
-# x轴数据 (归一化频率)
-x_axis = w_vals / π
+# 【优化】计算线性幅度
+mag = abs.(h_resp)
+# 【优化】转换为数组确保 TyPlot 兼容性
+frequencies_normalized = collect(w_range ./ pi)
 
-# ---------------------------------------------------------
-# 5. 使用 TyPlot 绘制增益响应曲线
-# ---------------------------------------------------------
-# 创建图形窗口
-figure("Butterworth IIR Bandpass Filter")
+println("正在绘制线性增益响应...")
 
-# 绘制主响应曲线
-plot(x_axis, mag_db, "b-", label="Filter Response", linewidth=2)
+figure("Butterworth IIR Bandpass Filter", figsize=(10, 8))
 
-# 添加网格 (修改为 "on")
-grid("on")
-
-# 设置标题和轴标签
-title("Butterworth IIR Bandpass Filter Gain Response")
-xlabel("Normalized Frequency (×π rad/sample)")
-ylabel("Magnitude (dB)")
-
-# 保持当前图形以便添加辅助线 (修改为 "on")
+# 1. 绘制幅频响应曲线
+plot(frequencies_normalized, mag, "b", linewidth=2, label="幅频响应 |H(e^jw)|")
 hold("on")
 
-# 添加指标辅助线 (通带 -0.6dB)
-plot([0.4, 0.6], [-Rp, -Rp], "g--", label="Passband Spec (-0.6dB)", linewidth=1.5)
+# 2. 绘制指标限制线 (线性坐标)
 
-# 添加指标辅助线 (阻带 -35dB)
-# 分两段画，避免中间连线
-plot([0.0, 0.3], [-Rs, -Rs], "r--", label="Stopband Spec (-35dB)", linewidth=1.5)
-plot([0.7, 1.0], [-Rs, -Rs], "r--", linewidth=1.5)
+# (A) 通带区域 (0.4 - 0.6)
+# 上限: 1.0
+plot([wp[1], wp[2]], [1.0, 1.0], "g--", label="通带上限 (1.0)")
+# 下限: 10^(-0.6/20)
+plot([wp[1], wp[2]], [mag_pass_min, mag_pass_min], "g--", label="通带下限 (-0.6dB)")
 
-# 设置Y轴范围
-ylim(-80, 5)
+# (B) 阻带区域 1 (0 - 0.3)
+plot([0, ws[1]], [mag_stop_max, mag_stop_max], "r--", label="阻带上限 (-35dB)")
 
-# 显示图例
+# (C) 阻带区域 2 (0.7 - 1.0)
+plot([ws[2], 1.0], [mag_stop_max, mag_stop_max], "r--")
+
+# (D) 垂直标记线
+plot([wp[1], wp[1]], [0, 1.1], "k:", label="通带边界")
+plot([wp[2], wp[2]], [0, 1.1], "k:")
+plot([ws[1], ws[1]], [0, 1.1], "k--", alpha=0.5, label="阻带边界")
+plot([ws[2], ws[2]], [0, 1.1], "k--", alpha=0.5)
+
+# 设置图形属性
+title("巴特沃兹 IIR 带通滤波器 (N=$N) - 线性幅度响应")
+xlabel("归一化频率 (×π rad/sample)")
+ylabel("幅度 (归一化 0-1)")
+xlim(0, 1)
+ylim(0, 1.1) 
+
+grid(true)
 legend()
 
 println("绘图完成。")

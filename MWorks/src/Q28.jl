@@ -1,114 +1,124 @@
 using TyPlot
-using DSP
 using FFTW
-# 移除 SpecialFunctions 引用以避免命名冲突
 
-# 1. 滤波器性能指标
-# 高通滤波器
-ws = 0.45 * pi  # 阻带截止频率
-wp = 0.55 * pi  # 通带截止频率
-delta = 0.04    # 波纹 (通带和阻带相同)
+# ==========================================
+# 0. 核心算法: 手动实现 Kaiser 窗
+# ==========================================
+# 目的: 避免依赖 DSP.jl 和 SpecialFunctions.jl，确保在 MWorks 中直接运行
 
-# 2. 计算参数
-# 截止频率 wc (取中心)
-wc = (ws + wp) / 2
+function my_besseli0(x)
+    s = 1.0; term = 1.0; x_half_sq = (x / 2)^2
+    for k in 1:25
+        term *= x_half_sq / (k^2); s += term
+        if term < 1e-12 * s; break; end
+    end
+    return s
+end
 
-# 过渡带宽度 dw
+function my_kaiser(M::Int, beta::Float64)
+    w = zeros(M); alpha = (M - 1) / 2.0; I0_beta = my_besseli0(beta)
+    for n in 0:M-1
+        val = beta * sqrt(1 - ((n - alpha) / alpha)^2)
+        val = max(0.0, abs(val)) 
+        w[n+1] = my_besseli0(val) / I0_beta
+    end
+    return w
+end
+
+# ==========================================
+# 1. 滤波器设计计算
+# ==========================================
+# 指标
+wp = 0.55 * pi  # 通带截止
+ws = 0.45 * pi  # 阻带截止
+delta = 0.04    # 波纹
+
+# 中间参数
+wc = (wp + ws) / 2
 dw = abs(wp - ws)
-
-# 阻带衰减 A (dB)
 A = -20 * log10(delta)
-println("设计参数:")
-println("  目标衰减 A = $(round(A, digits=2)) dB")
-println("  截止频率 wc = $(wc/pi) * pi")
-println("  过渡带 dw = $(dw/pi) * pi")
 
-# 估算阶数 N (使用 Kaiser 经验公式)
-# N = (A - 8) / (2.285 * dw)
+# 计算 Beta
+if A > 50; beta = 0.1102 * (A - 8.7)
+elseif A >= 21; beta = 0.5842 * (A - 21)^0.4 + 0.07886 * (A - 21)
+else; beta = 0.0; end
+
+# 计算阶数 N
 N_est = (A - 8) / (2.285 * dw)
 N = ceil(Int, N_est)
-# 保证 N 为偶数 (滤波器长度 M 为奇数)，以保证 Type I FIR (对称，中心不为0)
-# 高通滤波器通常需要 Type I (奇数长度 symmetric) 或 Type IV (偶数长度 antisymmetric)
-# 这里选择奇数长度 (Type I)
-if N % 2 != 0
-    N += 1
-end
-M = N + 1 # 滤波器长度 (Tap 数)
+# 修正: 高通滤波器必须是偶数阶 (奇数长度 Type I)
+if N % 2 != 0; N += 1; end 
+M = N + 1
+
+println("---------------------------")
+println("设计结果:")
+println("  阻带衰减 A = $(round(A, digits=2)) dB")
 println("  滤波器阶数 N = $N (长度 M = $M)")
+println("  Kaiser Beta = $(round(beta, digits=4))")
+println("---------------------------")
 
-# 计算 beta 参数
-# 将变量名 beta 修改为 beta_val 避免与函数名冲突
-if A > 50
-    beta_val = 0.1102 * (A - 8.7)
-elseif A >= 21
-    beta_val = 0.5842 * (A - 21)^0.4 + 0.07886 * (A - 21)
-else
-    beta_val = 0.0
+# 计算系数 h[n]
+alpha_val = N / 2
+n_seq = 0:N
+h_ideal = zeros(M)
+for i in 1:M
+    val = n_seq[i]
+    if val == alpha_val
+        h_ideal[i] = 1.0 - (wc / pi)
+    else
+        m_val = val - alpha_val
+        h_ideal[i] = -sin(wc * m_val) / (pi * m_val)
+    end
 end
-println("  Kaiser 参数 beta = $(round(beta_val, digits=4))")
+# 加窗
+h = h_ideal .* my_kaiser(M, beta)
 
-# 3. 构造理想高通滤波器 h_d[n]
-# 理想高通 = 延迟脉冲 - 理想低通
-# h_hp[n] = delta[n - tau] - (wc/pi) * sinc((wc/pi) * (n - tau))
-tau = (M - 1) / 2
-n = 0:(M-1)
+# ==========================================
+# 2. 频率响应计算
+# ==========================================
+K = 2048
+H = fft([h; zeros(K - M)])
+H_shifted = fftshift(H)
 
-# 注意：Julia 的 sinc(x) 定义为 sin(pi*x)/(pi*x)
-# 公式中的 sinc 参数需要归一化
-# 理想低通部分系数
-h_lp = (wc / pi) .* sinc.((wc / pi) .* (n .- tau))
+# 频率轴 (转换为数组以确保绘图兼容性)
+freqs = collect(range(-1, 1, length=K))
 
-# 理想高通系数
-h_d = -h_lp
-# 在中心点 (n = tau) 加上 1 (即 delta 函数)
-# 注意索引，Julia 是 1-based，但在 n 向量中我们已经定义了 0 到 M-1
-# tau 对应的索引是 tau + 1
-center_idx = Int(tau) + 1
-h_d[center_idx] += 1.0
+# 幅度响应 (dB)
+mag_H = abs.(H_shifted)
+gain_dB = 20 .* log10.(mag_H .+ 1e-12) 
 
-# 4. 生成 Kaiser 窗并加窗
-w = kaiser(M, beta_val)
-h = h_d .* w
+# ==========================================
+# 3. 绘图结果
+# ==========================================
+figure("High-pass Filter Design", figsize=(10, 8))
 
-# 5. 计算增益响应
-nfft = 1024
-# 补零
-h_padded = [h; zeros(nfft - length(h))]
-H = fft(h_padded)
-# 取前半部分 (0 到 pi) 进行绘制，这样更直观
-half_len = div(nfft, 2) + 1
-H_half = H[1:half_len]
-# 计算幅度 (dB)
-mag_H_db = 20 * log10.(abs.(H_half))
-
-# 频率轴 (0 到 pi)
-w_axis = range(0, pi, length=half_len)
-
-# 6. 绘图
-figure("High-pass Filter Design using Kaiser Window")
-
-# 子图1: 滤波器系数 h[n]
+# 子图 1: 冲激响应
 subplot(2, 1, 1)
-stem(n, h)
-title("FIR 高通滤波器单位脉冲响应 h[n] (N=$N)")
+stem(0:N, h, "b-o", label="h[n]")
+title("FIR 高通滤波器冲激响应 h[n] (N=$N)")
 xlabel("n")
 ylabel("幅度")
-grid("on")
+grid(true)
+legend()
 
-# 子图2: 增益响应 (dB)
+# 子图 2: 增益响应
 subplot(2, 1, 2)
-plot(w_axis ./ pi, mag_H_db)
-title("增益响应 (Gain Response) - [0, \\pi]")
-xlabel("归一化频率 (\\times \\pi rad/sample)")
-ylabel("幅度 (dB)")
-xlim([0, 1])     # 显示 0 到 1 (pi)
-ylim([-80, 10]) # 限制 Y 轴范围
-grid("on")
 
-# 添加指标辅助线
-# 阻带截止 (0.45) 和 通带截止 (0.55)
-# 阻带上限 (-A dB)
-plot([0, 0.45], [-A, -A], "--r", label="阻带指标") 
-# 通带下限 (这里近似画在 0dB 附近示意)
-plot([0.55, 1], [0, 0], "--g", label="通带指标")
+# 1. 先画指标辅助线 (放在底层)
+# 阻带/通带边界
+plot([ws/pi, ws/pi], [-100, 20], "k--", label="阻带/通带边界")
+plot([wp/pi, wp/pi], [-100, 20], "k--")
+# 最小衰减线
+plot([0, 1], [-A, -A], "k:", label="最小衰减指标")
+
+# 2. 画增益曲线 (红色实线)
+plot(freqs, gain_dB, "r", label="增益响应")
+
+title("增益响应 (dB)")
+xlabel("归一化频率 (ω / π)")
+ylabel("幅度 (dB)")
+xlim(0, 1)      # 只显示 0 到 pi
+ylim(-100, 10)  # Y 轴范围: 显示从 -100dB 到 10dB
+
+grid(true)
 legend()

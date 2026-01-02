@@ -1,64 +1,141 @@
 using TyPlot
-using Statistics # 导入统计包以使用 median 函数
+using Statistics
+using Random
 
-# 1. 信号生成参数
-N = 40                  # 序列长度
-n = 0:N-1               # 时间索引 (0 到 39)
+# ==========================================
+# 1) 5 点中值滤波器（边界：缩窗）
+# ==========================================
+"""
+    median_filter(signal, L)
 
-# 2. 生成原始信号 s[n]
-# 公式: s[n] = 3 * n * (0.8)^n
-# 注意: Julia 中 .^ 用于逐元素幂运算
-s = 3 .* n .* (0.8).^n
+一维中值滤波器（窗口长度 L 必须为奇数）。
+边界处采用“缩窗”（不补零、不镜像），避免边缘失真。
+"""
+function median_filter(signal::AbstractVector{T}, L::Int) where {T<:Real}
+    @assert L > 0 && isodd(L) "窗口长度 L 必须为正奇数（例如 5）"
 
-# 3. 生成加性噪声 d[n]
-# "幅度 0.6" 通常指均匀分布在 [-0.6, 0.6] 之间的随机噪声
-# rand(N) 生成 [0, 1) 的随机数
-# (rand(N) .- 0.5) .* 2 生成 [-1, 1)
-# 乘以 0.6 得到 [-0.6, 0.6)
-noise_amp = 0.6
-d = (rand(N) .- 0.5) .* 2 .* noise_amp
+    N = length(signal)
+    y = Vector{Float64}(undef, N)
+    half = L ÷ 2
 
-# 生成受干扰序列 x[n]
-x = s .+ d
-
-# 4. 实现长度为 5 的中值滤波器
-# 窗口长度 L = 5，意味着取 n-2, n-1, n, n+1, n+2 的中位数
-L = 5
-half_L = floor(Int, L / 2) # 半窗口长度 = 2
-y = zeros(N) # 初始化输出序列
-
-for i in 1:N
-    # 确定当前窗口的起始和结束索引 (处理边界情况)
-    # Julia 索引从 1 开始，对应 n = i-1
-    # 窗口范围: [max(1, i - half_L), min(N, i + half_L)]
-    start_idx = max(1, i - half_L)
-    end_idx = min(N, i + half_L)
-    
-    # 提取窗口内的数据
-    window_data = x[start_idx:end_idx]
-    
-    # 计算中值并赋值
-    y[i] = median(window_data)
+    @inbounds for i in 1:N
+        a = max(1, i - half)
+        b = min(N, i + half)
+        @views y[i] = median(signal[a:b])
+    end
+    return y
 end
 
-# 5. 绘图
-figure("Median Filter Analysis")
+# ==========================================
+# 2) 题目数据：s[n] 与噪声 d[n]
+# ==========================================
+N = 40
+n = collect(0:N-1)                 # 用 collect 避免绘图函数对 Range 支持不一致
 
-# 子图 1: 受干扰的序列 x[n]
-subplot(2, 1, 1)
-stem(n, x, "b-o", label="受干扰序列")
-# 可选: 绘制原始纯净信号作为参考 (虚线)
-plot(n, s, "g--", label="原始信号") 
-title("受干扰序列 (原始信号 + 噪声)")
+# s[n] = 3 * n * (0.8)^n
+s = 3.0 .* n .* (0.8) .^ n
+
+# d[n]：幅度 0.6 的随机序列（均匀分布在 [-0.6, 0.6]）
+noise_amp = 0.6
+Random.seed!(2026)                 # 固定随机种子：每次运行结果一致，便于验收/调参
+d = noise_amp .* (2 .* rand(N) .- 1)
+
+# 受干扰序列 x[n]
+x = s .+ d
+
+# ==========================================
+# 3) 5 点中值滤波
+# ==========================================
+L = 5
+y = median_filter(x, L)
+
+# ==========================================
+# 4) 绘图：按题意分别画 40 点“受干扰序列”和“滤波输出”
+#    （并额外用虚线叠加 s[n] 方便对比，噪声会更明显）
+# ==========================================
+figure("Median Filter (L=5)", figsize=(10, 8))
+
+# (1) 受干扰序列
+subplot(4, 1, 1)
+# TyPlot 的 basefmt 不支持 " "（空格式）。这里先画 stem，然后把 baseline 隐藏掉。
+h1 = stem(n, x, markerfmt="bo", linefmt="b-", label="x[n]=s[n]+d[n]")
+try
+    c1 = (h1 isa AbstractVector && length(h1) == 1) ? h1[1] : h1
+    if PyCall.pyhasattr(c1, "baseline")
+        c1.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, s, "g--", linewidth=2, alpha=0.8, label="s[n] (无噪声)")
+
+title("输入信号")
 ylabel("幅度")
-legend()
+legend(loc="best")
 grid(true)
 
-# 子图 2: 中值滤波器输出 y[n]
-subplot(2, 1, 2)
-stem(n, y, "r-o", label="滤波后输出")
-title("5点中值滤波器输出")
-xlabel("样本 n")
+
+# (1) 受干扰序列
+subplot(4, 1,2)
+# TyPlot 的 basefmt 不支持 " "（空格式）。这里先画 stem，然后把 baseline 隐藏掉。
+h2 = stem(n, x, markerfmt="bo", linefmt="b-", label="x[n]=s[n]+d[n]")
+try
+    c2 = (h2 isa AbstractVector && length(h2) == 1) ? h2[1] : h2
+    if PyCall.pyhasattr(c2, "baseline")
+        c2.baseline.set_visible(false)
+    end
+catch
+end
+
+# 额外把噪声画出来（看不清噪声时非常有用）
+plot(n, d, "k:", linewidth=1.5, alpha=0.8, label="d[n] (噪声)")
+
+title("长度为 40 的受干扰序列（噪声幅度 ±0.6）")
 ylabel("幅度")
-legend()
+legend(loc="best")
 grid(true)
+
+
+# (3) 中值滤波输出
+subplot(4, 1, 3)
+h3 = stem(n, y, markerfmt="ro", linefmt="r-", label="信号+噪声")
+try
+    c3 = (h3 isa AbstractVector && length(h3) == 1) ? h3[1] : h3
+    if PyCall.pyhasattr(c3, "baseline")
+        c3.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, s+d, "k:", linewidth=2, alpha=0.8, label="信号+噪声")
+
+title("信号+噪声")
+xlabel("样本序号 n")
+ylabel("幅度")
+legend(loc="best")
+grid(true)
+
+# (2) 中值滤波输出
+subplot(4, 1, 4)
+h4 = stem(n, y, markerfmt="ro", linefmt="r-", label="y[n] (5点中值滤波输出)")
+try
+    c4 = (h4 isa AbstractVector && length(h4) == 1) ? h4[1] : h4
+    if PyCall.pyhasattr(c4, "baseline")
+        c4.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, y, "k:", linewidth=2, alpha=0.8, label="y[n] (5点中值滤波输出)")
+
+title("5 点中值滤波器输出")
+xlabel("样本序号 n")
+ylabel("幅度")
+legend(loc="best")
+grid(true)
+
+try
+    gcf().tight_layout()
+catch
+end
+
+
+# 如果你只想严格按题意“分别绘制”且不叠加 s[n] 和 d[n]：
+# - 把上面两个 subplot 里的 plot(n, s, ...) 和 plot(n, d, ...) 注释掉即可。

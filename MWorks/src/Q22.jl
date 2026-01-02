@@ -1,69 +1,86 @@
-# 导入必要的包
 using TyPlot
-using FFTW # 用于 fft, fftshift。如果未安装，请运行 import Pkg; Pkg.add("FFTW")
+using FFTW
 
-# 1. 定义序列 x[n]
-# 范围: 0 <= n <= 15
-n = 0:15
-# x[n] = cos(pi * n / 2)
-# 注意使用 . 进行向量化运算
+# ==========================================
+# 1. 信号定义
+# ==========================================
+# 题目: x[n] = cos(pi * n / 2), 0 <= n <= 15
+N = 16
+n = 0:N-1
 x = cos.(pi .* n ./ 2)
 
-# 2. 计算 DFT (N点离散傅里叶变换)
-# 直接对 16 点序列进行 FFT
+# ==========================================
+# 2. 计算 DFT (离散傅里叶变换)
+# ==========================================
+# DFT 计算的是离散频点 k = 0, 1, ..., N-1
 X_k = fft(x)
-# 取幅度
 mag_X_k = abs.(X_k)
-# 定义 DFT 的频率索引轴 k
-k = 0:length(x)-1
+k = 0:N-1
 
-# 3. 计算 DTFT (离散时间傅里叶变换)
-# DTFT 是连续频谱。为了在计算机中绘制，我们通常通过对序列进行大量补零
-# 然后做 FFT 来获得高密度的频谱样本作为近似。
-K = 1024 # 定义高分辨率的点数
-# 构造补零后的序列: 原始 x 加上 (K - N) 个零
-x_padded = [x; zeros(K - length(x))]
+# ==========================================
+# 3. 计算 DTFT (离散时间傅里叶变换) - 近似
+# ==========================================
+# DTFT 是连续频谱 X(e^jw)。
+# 为了在计算机中绘制，我们对信号进行大量补零，
+# 然后使用 FFT 计算出高密度的频域样本。
 
-# 计算补零后的 FFT
+# 设置高分辨率点数 (比如 1024 或 2048)
+K = 2048 
+
+# 构造补零后的信号: [原始信号, 0, 0, ...]
+x_padded = [x; zeros(K - N)]
+
+# 计算 FFT 并移位，使零频率位于中心
 X_dtft = fft(x_padded)
-
-# 使用 fftshift 将零频率分量移到频谱中心
 X_dtft_shifted = fftshift(X_dtft)
-
-# 取幅度
 mag_X_dtft = abs.(X_dtft_shifted)
 
-# 定义 DTFT 的频率轴 omega，范围从 -pi 到 pi
-w = range(-pi, stop=pi, length=K)
+# 生成归一化频率轴 w / pi
+# 范围: -1 到 1 (对应 -pi 到 pi)
+# 这样画图时，x轴为 0.5 就代表 0.5pi (即 pi/2)
+w_normalized = range(-1, 1, length=K)
 
+# ==========================================
 # 4. 绘图
-figure("DFT and DTFT Analysis")
+# ==========================================
+figure("DFT and DTFT Analysis", figsize=(10, 8))
 
-# 子图 1: 原始序列 x[n]
+# 子图 1: 时域序列 x[n]
 subplot(3, 1, 1)
-stem(n, x)
-title("原始序列 x[n] = cos(\\pi n / 2)")
+# 修正: 移除了不兼容的 basefmt 参数
+stem(n, x, "b-o", label="x[n]")
+title("时域序列 x[n] = cos(\\pi n / 2)")
 xlabel("n")
-ylabel("x[n]")
-grid("on")
+ylabel("幅度")
+grid(true)
+xlim([-1, 16])
 
-# 子图 2: DFT 幅度谱 |X[k]|
+# 子图 2: DFT 幅度谱 |X[k]| (N点)
 subplot(3, 1, 2)
-stem(k, mag_X_k)
+# 修正: 移除了不兼容的 basefmt 参数
+stem(k, mag_X_k, "r-o", label="|X[k]|")
 title("DFT 幅度谱 |X[k]| (N=16)")
-xlabel("k (频率索引)")
-ylabel("|X[k]|")
-grid("on")
+xlabel("频率索引 k")
+ylabel("幅度")
+grid(true)
+xlim([0, 15])
+# 解释: 对于 cos(pi*n/2)，频率是 1/4 fs。
+# k = N * f = 16 * 0.25 = 4。所以 k=4 和 k=12 (16-4) 处有峰值。
 
-# 子图 3: DTFT 幅度谱 |X(e^{j\\omega})|
+# 子图 3: DTFT 幅度谱 |X(e^{j\\omega})| (归一化频率)
 subplot(3, 1, 3)
-plot(w, mag_X_dtft)
-title("DTFT 幅度谱 (近似)")
-xlabel("\\omega (弧度/样本)")
-ylabel("|X(e^{j\\omega})|")
-# 设置 x 轴范围为 -pi 到 pi
-xlim([-pi, pi])
-grid("on")
+plot(w_normalized, mag_X_dtft, "g", linewidth=2, label="|X(e^{j\\omega})|")
+title("DTFT 幅度谱 (频率轴归一化: \\times \\pi rad/sample)")
+xlabel("归一化频率 (\\omega / \\pi)") # 这样轴刻度 0.5 就代表 pi/2
+ylabel("幅度")
+grid(true)
+xlim([-1, 1])
 
-# 调整布局以防止重叠 (如果支持)
+# 叠加显示 DFT 的点在 DTFT 上对应的位置 (为了展示 DFT 是 DTFT 的采样)
+# DFT 的 k 对应模拟频率 w_k = 2*pi*k/N
+# 归一化频率 w_norm = w_k / pi = 2*k/N
+# 注意 fftshift 后的范围问题，为了简单展示，这里只画 DTFT 曲线
+# 峰值应该出现在 +/- 0.5 处 (因为 pi/2 / pi = 0.5)
+
+# 自动调整布局
 # tight_layout()

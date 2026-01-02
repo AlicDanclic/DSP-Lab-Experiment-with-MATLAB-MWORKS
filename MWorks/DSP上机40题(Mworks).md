@@ -289,141 +289,189 @@ println("绘图完成。")
 ## 3.已知系统的系统函数为: $H(z)=\frac{1-0.2z^{-1}+0.5z^{-2}}{1+3.2z^{-1}+1.5z^{-2}-0.8z^{-3}+1.4z^{-4}}.$ 用 MATLAB 进行部分分式展开, 并写出展开后的表达式。
 
 ```julia
-import Pkg
-# 检查并安装 Polynomials 包，用于多项式运算
-if Base.find_package("Polynomials") === nothing
-    println("正在安装 Polynomials 包...")
-    Pkg.add("Polynomials")
-end
-
-using Polynomials
 using LinearAlgebra
 using Printf
 
-println("=== 系统函数部分分式展开 (ResidueZ) ===")
+println("=== Q3: 部分分式展开（对应 MATLAB residuez）===")
 
-# ==========================================
-# 1. 定义系统参数
-# ==========================================
-# H(z) = B(z) / A(z)
-# 分子系数 (对应 1, z^-1, z^-2 ...)
-b = [1.0, -0.2, 0.5]
-# 分母系数 (对应 1, z^-1, z^-2, z^-3, z^-4)
-a = [1.0, 3.2, 1.5, -0.8, 1.4]
+# ------------------------------------------------------------
+# 1) 题目系数（按 z^-1 升幂：b0 + b1 z^-1 + ...）
+# ------------------------------------------------------------
+b = [1.0, -0.2, 0.5]                 # 1 - 0.2 z^-1 + 0.5 z^-2
+a = [1.0,  3.2, 1.5, -0.8, 1.4]      # 1 + 3.2 z^-1 + 1.5 z^-2 - 0.8 z^-3 + 1.4 z^-4
 
-println("分子系数 b: ", b)
-println("分母系数 a: ", a)
+# ------------------------------------------------------------
+# 2) 工具：降幂多项式求根  c0 z^n + c1 z^(n-1)+...+cn
+# ------------------------------------------------------------
+function roots_desc(c::AbstractVector{<:Real})
+    n = length(c) - 1
+    @assert n >= 1 "多项式阶数必须≥1"
+    c0 = c[1]
+    @assert abs(c0) > 1e-12 "最高次系数不能为0"
 
-# ==========================================
-# 2. 计算极点 (Poles)
-# ==========================================
-# 将 H(z) 上下同乘 z^4 (分母最高阶)，转换为 z 的正幂次多项式
-# A(z) = 1 + 3.2z^-1 + ... + 1.4z^-4
-# -> A_poly(z) = z^4 + 3.2z^3 + 1.5z^2 - 0.8z + 1.4
-# 注意：Polynomials 包默认系数顺序为升幂 [a0, a1, a2...]
-# 我们的 a 向量是降幂排列 (对应 z^0, z^-1...)，且转换后对应 z^N, z^(N-1)...
-# 因此 A_poly 的系数应该是 reverse(a)
+    cnorm = c ./ c0  # 归一化最高次为1
 
-den_coeffs = reverse(a) # [1.4, -0.8, 1.5, 3.2, 1.0]
-den_poly = Polynomial(den_coeffs)
-
-# 极点 p 是分母的根
-# 显式使用 Polynomials.roots 避免与 TyMath.roots 冲突
-p = Polynomials.roots(den_poly)
-
-println("\n计算得到的极点 p:")
-for (i, val) in enumerate(p)
-    @printf("p%d = %.4f %+.4fim\n", i, real(val), imag(val))
+    C = zeros(ComplexF64, n, n)
+    for i in 2:n
+        C[i, i-1] = 1.0
+    end
+    # companion 最后一列 = -[cn, c(n-1), ..., c1]^T
+    C[:, n] .= -reverse(cnorm[2:end])
+    eigvals(C)
 end
 
-# ==========================================
-# 3. 计算留数 (Residues)
-# ==========================================
-# 对于 H(z) = B(z)/A(z)，我们需要找到 r_i 使得 H(z) = sum( r_i / (1 - p_i*z^-1) )
-# 这等价于对 H(z)/z 进行部分分式展开：H(z)/z = sum( r_i / (z - p_i) )
-# r_i = [H(z)/z * (z - p_i)] | z=p_i
-#     = Num(p_i) / Den'(p_i)  (对于 H(z)/z 的分子分母)
+# 多项式求值：降幂系数
+polyval_desc(c::AbstractVector, z) = begin
+    y = 0.0 + 0.0im
+    for i in eachindex(c)
+        y = y*z + c[i]
+    end
+    y
+end
 
-# 构造 H(z)/z 的分子和分母多项式
-# 原 H(z) = (z^4 - 0.2z^3 + 0.5z^2) / (z^4 + ...)  [分子补齐 z^2 以匹配分母阶数]
-# H(z)/z = (z^3 - 0.2z^2 + 0.5z) / (z^4 + 3.2z^3 + ...)
+# 降幂导数系数
+function polyder_desc(c::AbstractVector{<:Real})
+    n = length(c) - 1
+    d = zeros(Float64, n)
+    for i in 1:n
+        d[i] = c[i] * (n - (i - 1))
+    end
+    d
+end
 
-# 构造分子系数 (升幂): 0.5z, -0.2z^2, 1.0z^3. 常数项为0
-# b 向量是 [1.0, -0.2, 0.5]，对应 1 - 0.2z^-1 + 0.5z^-2
-# 乘 z^4 变成 z^4 - 0.2z^3 + 0.5z^2
-# 除 z 变成 z^3 - 0.2z^2 + 0.5z
-# 系数(升幂): [0.0, 0.5, -0.2, 1.0]
-num_coeffs_for_residue = [0.0, 0.5, -0.2, 1.0] 
-num_poly_res = Polynomial(num_coeffs_for_residue)
+# ------------------------------------------------------------
+# 3) 把 A(z^-1) 转成 z 平面 D(z)=z^M A(z^-1) 并求极点
+#    A(z^-1)=1+a1 z^-1+...+aM z^-M
+#    => D(z)=z^M + a1 z^(M-1) + ... + aM
+#    其降幂系数刚好是 a 本身
+# ------------------------------------------------------------
+M = length(a) - 1
+D_desc = a                    # z^4 + 3.2 z^3 + 1.5 z^2 - 0.8 z + 1.4
+p = roots_desc(D_desc)        # z 平面极点
 
-# 分母多项式即为之前的 den_poly (A_poly)
-# r_i = Num_res(p_i) / Den_poly'(p_i)
+# ------------------------------------------------------------
+# 4) 留数计算（对应 H(z)=Σ r_i / (1 - p_i z^-1)）
+#
+# 令 N(z)=z^M B(z^-1)
+# B(z^-1)=b0+b1 z^-1+...+bK z^-K
+# => N(z)=b0 z^M + b1 z^(M-1) + ... + bK z^(M-K) + ... (不足补0)
+#
+# 对简单极点，有公式：
+#   r_i = N(p_i) / ( p_i * D'(p_i) )
+# ------------------------------------------------------------
+# 构造 N(z) 的降幂系数（长度 M+1）
+N_desc = zeros(Float64, M+1)
+for k in 0:(length(b)-1)
+    N_desc[1+k] = b[1+k]  # b0,b1,b2...
+end
+# N_desc 现在是 [b0,b1,b2,0,0] => z^4 -0.2 z^3 +0.5 z^2
 
-# 显式使用 Polynomials.derivative
-den_derivative = Polynomials.derivative(den_poly)
+Dder_desc = polyder_desc(D_desc)
 
 r = ComplexF64[]
-for pole in p
-    # 计算留数
-    res_val = num_poly_res(pole) / den_derivative(pole)
-    push!(r, res_val)
+for pi in p
+    ri = polyval_desc(N_desc, pi) / (pi * polyval_desc(Dder_desc, pi))
+    push!(r, ri)
 end
 
-println("\n计算得到的留数 r:")
+# ------------------------------------------------------------
+# 5) 打印：复数留数形式（与 residuez 同型）
+# ------------------------------------------------------------
+println("\n--- 极点 p（z 平面）---")
+for (i, val) in enumerate(p)
+    @printf("p%d = %.6f %+.6fim\n", i, real(val), imag(val))
+end
+
+println("\n--- 留数 r（使 H(z)=Σ r/(1-p z^-1) ）---")
 for (i, val) in enumerate(r)
-    @printf("r%d = %.4f %+.4fim\n", i, real(val), imag(val))
+    @printf("r%d = %.6f %+.6fim\n", i, real(val), imag(val))
 end
 
-# ==========================================
-# 4. 生成展开表达式
-# ==========================================
-println("\n=== 展开后的表达式 ===")
+println("\n--- 部分分式展开（复数形式）---")
 println("H(z) = ")
-for i in 1:length(r)
-    r_re = real(r[i])
-    r_im = imag(r[i])
-    p_re = real(p[i])
-    p_im = imag(p[i])
-    
-    # 格式化 r
-    r_str = ""
-    if abs(r_im) < 1e-6
-        r_str = @sprintf("%.4f", r_re)
-    else
-        r_str = @sprintf("(%.4f %+.4fj)", r_re, r_im)
-    end
-    
-    # 格式化 p
-    p_str = ""
-    if abs(p_im) < 1e-6
-        p_str = @sprintf("1 - %.4fz^-1", p_re)
-    else
-        p_str = @sprintf("1 - (%.4f %+.4fj)z^-1", p_re, p_im)
-    end
-    
-    # 打印项
-    if i == 1
-        print("      ", r_str, " / [", p_str, "]")
-    else
-        print("\n    + ", r_str, " / [", p_str, "]")
-    end
+for i in eachindex(r)
+    @printf("  %+.6f %+.6fim / (1 - (%.6f %+.6fim) z^-1)\n",
+            real(r[i]), imag(r[i]), real(p[i]), imag(p[i]))
 end
-println("\n")
+
+# ------------------------------------------------------------
+# 6) 可选：把共轭对合并成“实系数二阶项”（更像手写答案）
+#    若 (r,p) 与 (conj(r),conj(p))：
+#      r/(1-pq) + r*/(1-p*q) =
+#      (2Re(r) - 2Re(r*conj(p)) q) / (1 - 2Re(p) q + |p|^2 q^2),  q=z^-1
+# ------------------------------------------------------------
+function pair_conj_indices(vals::Vector{ComplexF64}; tol=1e-6)
+    used = falses(length(vals))
+    pairs = Tuple{Int,Int}[]
+    singles = Int[]
+    for i in eachindex(vals)
+        used[i] && continue
+        if abs(imag(vals[i])) < tol
+            push!(singles, i); used[i]=true
+        else
+            j = findfirst(j -> !used[j] && j!=i && abs(vals[j]-conj(vals[i])) < 1e-4, eachindex(vals))
+            if j === nothing
+                push!(singles, i); used[i]=true
+            else
+                push!(pairs, (i,j)); used[i]=true; used[j]=true
+            end
+        end
+    end
+    return pairs, singles
+end
+
+pairs, singles = pair_conj_indices(p)
+
+println("\n--- 合并共轭后的实系数形式 ---")
+for (i,j) in pairs
+    ri, pi = r[i], p[i]
+    b0 = 2*real(ri)
+    b1 = -2*real(ri*conj(pi))
+    a1 = -2*real(pi)
+    a2 = abs(pi)^2
+    @printf("  (%.6f %+ .6f z^-1) / (1 %+ .6f z^-1 %+ .6f z^-2)\n", b0, b1, a1, a2)
+end
+for i in singles
+    # 实极点对应一阶项
+    @printf("  (%.6f) / (1 - (%.6f) z^-1)\n", real(r[i]), real(p[i]))
+end
+
+# ------------------------------------------------------------
+# 7) 数值校验：在单位圆上采样对比原系统与展开式
+#    （包进函数，避免 Mworks soft scope 报错）
+# ------------------------------------------------------------
+function validate_pf(b, a, r, p)
+    function H_from_ba(b,a,ω)
+        q = exp(-1im*ω)  # z^-1
+        num = sum(b[k]*q^(k-1) for k in 1:length(b))
+        den = sum(a[k]*q^(k-1) for k in 1:length(a))
+        num/den
+    end
+
+    function H_from_rp(r,p,ω)
+        q = exp(-1im*ω)
+        s = 0.0 + 0.0im
+        for i in eachindex(r)
+            s += r[i] / (1 - p[i]*q)
+        end
+        s
+    end
+
+    ws = range(0, 2π, length=2048)
+    err = 0.0
+    for ω in ws
+        err = max(err, abs(H_from_ba(b,a,ω) - H_from_rp(r,p,ω)))
+    end
+    @printf("\n校验：max |H_orig - H_pf| = %.3e\n", err)
+end
+
+validate_pf(b, a, r, p)
+
 ```
 
 ## 4.设计切比雪夫 I 型 IIR 数字高通滤波器, 其性能指标为: 通带波纹 $\alpha_{p}=0.5dB$, 最小阻带衰减 $\alpha_{s}=43dB$, 通带和阻带边缘频率 $\omega_{p}=0.75\pi$ rad 和 $\omega_{s}=0.35\pi$ rad。绘制所设计的滤波器增益响应。。
 
 ```julia
-import Pkg
-# 检查并安装 DSP 包
-required_packages = ["DSP", "TyPlot"]
-for pkg in required_packages
-    if Base.find_package(pkg) === nothing
-        println("正在安装 $pkg ...")
-        Pkg.add(pkg)
-    end
-end
-
 using DSP
 using TyPlot
 using Printf
@@ -433,107 +481,100 @@ println("=== 切比雪夫 I 型 IIR 高通滤波器设计 ===")
 # ==========================================
 # 1. 定义性能指标
 # ==========================================
-Rp = 0.5            # 通带波纹 (dB)
-Rs = 43.0           # 最小阻带衰减 (dB)
+Rp_dB = 0.5         # 通带波纹 (dB)
+Rs_dB = 43.0        # 最小阻带衰减 (dB)
 wp = 0.75           # 通带边缘频率 (归一化, 1.0 = π)
 ws = 0.35           # 阻带边缘频率 (归一化, 1.0 = π)
 
+# 将 dB 指标转换为线性幅度指标以便后续绘图和验证
+# 通带最小幅度: 10^(-0.5/20)
+mag_pass_min = 10^(-Rp_dB / 20)
+# 阻带最大幅度: 10^(-43/20)
+mag_stop_max = 10^(-Rs_dB / 20)
+
 println("指标参数:")
-println("  通带波纹 Rp: $Rp dB")
-println("  阻带衰减 Rs: $Rs dB")
-println("  通带频率 wp: $(wp)π")
-println("  阻带频率 ws: $(ws)π")
+println("  通带波纹: $Rp_dB dB (线性幅度 > $(round(mag_pass_min, digits=4)))")
+println("  阻带衰减: $Rs_dB dB (线性幅度 < $(round(mag_stop_max, digits=5)))")
+println("  通带频率: $(wp)π")
+println("  阻带频率: $(ws)π")
 
 # ==========================================
 # 2. 计算最小阶数 N
 # ==========================================
-# 为了确定满足衰减指标的最小阶数，我们需要使用模拟原型的公式
-# 步骤: 
-# 1. 将数字频率预畸变转换为模拟频率 Omega = tan(w/2)
-# 2. 计算高通滤波器的选择性因子 k = Omega_stop_analog / Omega_pass_analog (注意高通反转)
-#    对于高通设计，我们将其映射到低通原型，变换比为 Omega_p / Omega
-#    因此选择性因子 k_lp = (tan(wp*pi/2) / tan(ws*pi/2)) 的倒数? 
-#    标准低通原型的阻带边缘 Omega_s' = tan(wp*pi/2) / tan(ws*pi/2)
+# 使用双线性变换的模拟原型法计算阶数
+# 1. 预畸变: 将数字频率映射到模拟频率 Omega = tan(w/2)
+Omega_p = tan(wp * pi / 2)
+Omega_s = tan(ws * pi / 2)
 
-# 数字角频率
-w_p_rad = wp * pi
-w_s_rad = ws * pi
-
-# 预畸变 (Pre-warping)
-Omega_p = tan(w_p_rad / 2)
-Omega_s = tan(w_s_rad / 2)
-
-# 计算低通原型的归一化阻带频率 lambda_s
-# 对于高通滤波器，通带映射到 1，阻带映射到 Omega_p / Omega_s
+# 2. 计算高通滤波器的选择性因子 (映射到低通原型)
+# 对于高通 HP -> 低通 LP 变换: λ = Ωp / Ω
+# 阻带边缘对应的低通原型频率 λs = Ωp / Ωs
 lambda_s = Omega_p / Omega_s
 
-println("\n中间计算结果:")
-@printf("  模拟通带频率 Ωp: %.4f\n", Omega_p)
-@printf("  模拟阻带频率 Ωs: %.4f\n", Omega_s)
-@printf("  低通原型阻带比 λs: %.4f\n", lambda_s)
-
-# 切比雪夫阶数公式
-# N >= acosh( sqrt((10^(0.1*Rs) - 1) / (10^(0.1*Rp) - 1)) ) / acosh(lambda_s)
-numerator = acosh(sqrt((10^(0.1 * Rs) - 1) / (10^(0.1 * Rp) - 1)))
+# 3. 切比雪夫阶数公式
+numerator = acosh(sqrt((10^(0.1 * Rs_dB) - 1) / (10^(0.1 * Rp_dB) - 1)))
 denominator = acosh(lambda_s)
-N_exact = numerator / denominator
-N = ceil(Int, N_exact)
+N = ceil(Int, numerator / denominator)
 
-println("  计算出的最小阶数 N: $N (精确值: $(round(N_exact, digits=3)))")
+println("\n计算结果:")
+println("  模拟频率比 λs: $(round(lambda_s, digits=4))")
+println("  所需最小阶数 N: $N")
 
 # ==========================================
 # 3. 设计滤波器
 # ==========================================
-# 使用 DSP.jl 进行设计
-# 注意：DSP.jl 的 Highpass(Wn) 中的 Wn 是通带截止频率
-# Chebyshev1(N, ripple) 中的 ripple 是通带波纹
-
+# Highpass(Wn) 中的 Wn 是归一化截止频率
+# Chebyshev1(N, ripple) 中的 ripple 是 dB
 response_type = Highpass(wp)
-design_method = Chebyshev1(N, Rp)
+design_method = Chebyshev1(N, Rp_dB)
 
-try
-    global filter_obj = digitalfilter(response_type, design_method)
-    println("\n滤波器设计成功！")
-catch e
-    println("\n滤波器设计失败: ", e)
-end
+filter_obj = digitalfilter(response_type, design_method)
+println("  滤波器设计完成。")
 
 # ==========================================
-# 4. 计算频率响应并绘图
+# 4. 计算频率响应并绘图 (线性幅度)
 # ==========================================
-# 定义频率向量 (0 到 π)
-w_range = range(0, stop=pi, length=512)
+# 定义频率向量
+w_range = range(0, stop=pi, length=1024)
 h_resp = freqz(filter_obj, w_range)
 
-# 计算幅度 (dB)
-mag_db = 20 * log10.(abs.(h_resp))
-frequencies_normalized = w_range / pi
+# 【优化】计算线性幅度 (Linear Magnitude)
+mag = abs.(h_resp)
+# 【优化】转换为数组确保 TyPlot 兼容性
+frequencies_normalized = collect(w_range ./ pi)
 
-println("正在绘制增益响应...")
+println("正在绘制线性增益响应...")
 
-# 绘制幅频响应
-plot(frequencies_normalized, mag_db, "b-", linewidth=2, label="Gain Response")
+figure("Chebyshev Type I Highpass Filter", figsize=(10, 8))
+
+# 1. 绘制幅频响应曲线
+plot(frequencies_normalized, mag, "b", linewidth=2, label="幅频响应 |H(e^jw)|")
 hold("on")
 
-# 绘制指标限制框
-# 1. 通带区域 (0.75 到 1.0): 增益应在 -0.5dB 到 0dB 之间
-#    这里只画下限 -0.5dB
-plot([wp, 1.0], [-Rp, -Rp], "g--", linewidth=2, label="Passband Ripple Limit (-0.5dB)")
+# 2. 绘制指标限制线 (线性坐标)
 
-# 2. 阻带区域 (0 到 0.35): 增益应小于 -43dB
-plot([0, ws], [-Rs, -Rs], "r--", linewidth=2, label="Stopband Attenuation Limit (-43dB)")
+# (A) 通带区域 (0.75 - 1.0)
+# 上限: 1.0 (0dB)
+plot([wp, 1.0], [1.0, 1.0], "g--", label="通带上限 (1.0)")
+# 下限: 10^(-0.5/20) ≈ 0.944
+plot([wp, 1.0], [mag_pass_min, mag_pass_min], "g--", label="通带下限 (-0.5dB)")
 
-# 绘制截止频率标记
-plot([wp, wp], [-60, 5], "k:", label="Passband Edge (0.75\\pi)")
-plot([ws, ws], [-60, 5], "k:", label="Stopband Edge (0.35\\pi)")
+# (B) 阻带区域 (0 - 0.35)
+# 上限: 10^(-43/20) ≈ 0.007
+plot([0, ws], [mag_stop_max, mag_stop_max], "r--", label="阻带上限 (-43dB)")
+
+# (C) 截止频率垂直标记
+plot([wp, wp], [0, 1.1], "k:", label="通带截止 (0.75π)")
+plot([ws, ws], [0, 1.1], "k:", label="阻带截止 (0.35π)")
 
 # 设置图形属性
-title("Chebyshev Type I Highpass Filter Response (N=$N)")
-xlabel("Normalized Frequency (x \\pi rad/sample)")
-ylabel("Magnitude (dB)")
+title("切比雪夫 I 型高通滤波器 (N=$N) - 线性幅度响应")
+xlabel("归一化频率 (×π rad/sample)")
+ylabel("幅度 (归一化 0-1)")
 xlim(0, 1)
-ylim(-80, 5) # 设置合适的 Y 轴范围以显示衰减
-grid("on")
+ylim(0, 1.1) # 线性坐标下，稍微多出一点空间看清楚 1.0
+
+grid(true)
 legend()
 
 println("绘图完成。")
@@ -783,99 +824,100 @@ println("分母 D(z): ", den)
 ## 8.设计巴特沃兹 IIR 数字带通滤波器, 其性能指标为: 归一化通带截止频率为 $\omega_{p1}=0.4\pi,\omega_{p2}=0.6\pi$ , 归一化阻带截止频率为 $\omega_{s1}=0.3\pi$, $\omega_{s2}=0.7\pi$, 通带波纹为 0.6dB, 最小阻带衰减为 35dB。绘制所设计的滤波器增益响应。
 
 ```julia
-import Pkg
-
-# ---------------------------------------------------------
-# 依赖检查
-# ---------------------------------------------------------
-# 检查并安装 DSP 库
-try
-    using DSP
-catch
-    println("正在安装 DSP 包...")
-    Pkg.add("DSP")
-    using DSP
-end
-
-# 加载 TyPlot (MWorks 原生绘图库)
+using DSP
 using TyPlot
+using Printf
 
-# ---------------------------------------------------------
-# 1. 定义滤波器性能指标
-# ---------------------------------------------------------
-# 归一化频率 (ω/π)
-# 注意：DSP.jl 的 buttord 函数要求带通频率范围必须是 Tuple (元组)，不能是 Vector [向量]
-wp = (0.4, 0.6)      # 通带截止频率 (使用圆括号)
-ws = (0.3, 0.7)      # 阻带截止频率 (使用圆括号)
-Rp = 0.6             # 通带最大波纹 (dB)
-Rs = 35              # 阻带最小衰减 (dB)
+println("=== 巴特沃兹 IIR 带通滤波器设计 ===")
 
-println("正在计算滤波器参数...")
+# ==========================================
+# 1. 定义性能指标
+# ==========================================
+# 归一化频率 (1.0 = π)
+wp = (0.4, 0.6)      # 通带范围
+ws = (0.3, 0.7)      # 阻带范围
+Rp_dB = 0.6          # 通带波纹 (dB)
+Rs_dB = 35.0         # 最小阻带衰减 (dB)
 
-# ---------------------------------------------------------
-# 2. 计算巴特沃兹滤波器参数
-# ---------------------------------------------------------
-# buttord(wp::Tuple, ws::Tuple, Rp, Rs)
-N, Wn = buttord(wp, ws, Rp, Rs)
+# 将 dB 指标转换为线性幅度以便绘图
+# 通带最小幅度: 10^(-0.6/20)
+mag_pass_min = 10^(-Rp_dB / 20)
+# 阻带最大幅度: 10^(-35/20)
+mag_stop_max = 10^(-Rs_dB / 20)
 
-println("----------- 设计结果 -----------")
-println("滤波器类型: Butterworth IIR Bandpass")
-println("计算得到的阶数 N: ", N)
-println("3dB 截止频率 Wn: ", Wn)
+println("指标参数:")
+println("  通带频率: $(wp[1])π 到 $(wp[2])π")
+println("  阻带频率: <$(ws[1])π 和 >$(ws[2])π")
+println("  通带波纹: $Rp_dB dB (线性幅度 > $(round(mag_pass_min, digits=4)))")
+println("  阻带衰减: $Rs_dB dB (线性幅度 < $(round(mag_stop_max, digits=5)))")
 
-# ---------------------------------------------------------
+# ==========================================
+# 2. 计算阶数和截止频率
+# ==========================================
+# buttord 返回最小阶数 N 和 3dB 截止频率 Wn
+N, Wn = buttord(wp, ws, Rp_dB, Rs_dB)
+
+println("\n设计结果:")
+println("  滤波器阶数 N: $N")
+println("  3dB 截止频率 Wn: $(round.(Wn, digits=4))")
+
+# ==========================================
 # 3. 设计滤波器
-# ---------------------------------------------------------
-# Wn 返回的也是 Tuple，直接通过索引访问
+# ==========================================
 responsetype = Bandpass(Wn[1], Wn[2])
 designmethod = Butterworth(N)
 filter_system = digitalfilter(responsetype, designmethod)
 
-# ---------------------------------------------------------
-# 4. 分析频率响应
-# ---------------------------------------------------------
-num_points = 1024
-w_vals = range(0, π, length=num_points)
+println("  滤波器设计完成。")
 
-# 计算频率响应
-H = freqz(filter_system, w_vals)
-mag_db = 20 * log10.(abs.(H))
+# ==========================================
+# 4. 计算频率响应并绘图 (线性幅度)
+# ==========================================
+# 定义频率向量
+w_range = range(0, stop=pi, length=1024)
+h_resp = freqz(filter_system, w_range)
 
-# x轴数据 (归一化频率)
-x_axis = w_vals / π
+# 【优化】计算线性幅度
+mag = abs.(h_resp)
+# 【优化】转换为数组确保 TyPlot 兼容性
+frequencies_normalized = collect(w_range ./ pi)
 
-# ---------------------------------------------------------
-# 5. 使用 TyPlot 绘制增益响应曲线
-# ---------------------------------------------------------
-# 创建图形窗口
-figure("Butterworth IIR Bandpass Filter")
+println("正在绘制线性增益响应...")
 
-# 绘制主响应曲线
-plot(x_axis, mag_db, "b-", label="Filter Response", linewidth=2)
+figure("Butterworth IIR Bandpass Filter", figsize=(10, 8))
 
-# 添加网格 (修改为 "on")
-grid("on")
-
-# 设置标题和轴标签
-title("Butterworth IIR Bandpass Filter Gain Response")
-xlabel("Normalized Frequency (×π rad/sample)")
-ylabel("Magnitude (dB)")
-
-# 保持当前图形以便添加辅助线 (修改为 "on")
+# 1. 绘制幅频响应曲线
+plot(frequencies_normalized, mag, "b", linewidth=2, label="幅频响应 |H(e^jw)|")
 hold("on")
 
-# 添加指标辅助线 (通带 -0.6dB)
-plot([0.4, 0.6], [-Rp, -Rp], "g--", label="Passband Spec (-0.6dB)", linewidth=1.5)
+# 2. 绘制指标限制线 (线性坐标)
 
-# 添加指标辅助线 (阻带 -35dB)
-# 分两段画，避免中间连线
-plot([0.0, 0.3], [-Rs, -Rs], "r--", label="Stopband Spec (-35dB)", linewidth=1.5)
-plot([0.7, 1.0], [-Rs, -Rs], "r--", linewidth=1.5)
+# (A) 通带区域 (0.4 - 0.6)
+# 上限: 1.0
+plot([wp[1], wp[2]], [1.0, 1.0], "g--", label="通带上限 (1.0)")
+# 下限: 10^(-0.6/20)
+plot([wp[1], wp[2]], [mag_pass_min, mag_pass_min], "g--", label="通带下限 (-0.6dB)")
 
-# 设置Y轴范围
-ylim(-80, 5)
+# (B) 阻带区域 1 (0 - 0.3)
+plot([0, ws[1]], [mag_stop_max, mag_stop_max], "r--", label="阻带上限 (-35dB)")
 
-# 显示图例
+# (C) 阻带区域 2 (0.7 - 1.0)
+plot([ws[2], 1.0], [mag_stop_max, mag_stop_max], "r--")
+
+# (D) 垂直标记线
+plot([wp[1], wp[1]], [0, 1.1], "k:", label="通带边界")
+plot([wp[2], wp[2]], [0, 1.1], "k:")
+plot([ws[1], ws[1]], [0, 1.1], "k--", alpha=0.5, label="阻带边界")
+plot([ws[2], ws[2]], [0, 1.1], "k--", alpha=0.5)
+
+# 设置图形属性
+title("巴特沃兹 IIR 带通滤波器 (N=$N) - 线性幅度响应")
+xlabel("归一化频率 (×π rad/sample)")
+ylabel("幅度 (归一化 0-1)")
+xlim(0, 1)
+ylim(0, 1.1) 
+
+grid(true)
 legend()
 
 println("绘图完成。")
@@ -1097,108 +1139,111 @@ solve_impulse_response()
 ```julia
 using DSP
 using TyPlot
+using Optim
+using Statistics
+using LinearAlgebra
 
 """
-椭圆滤波器设计与群延时分析
-任务：
-1. 设计 5 阶椭圆低通滤波器 (0.35pi, 0.8dB ripple, 35dB attenuation)
-2. 框架性展示 10 阶全通滤波器级联 (注：自动系数优化需额外算法支持)
-3. 绘制群延时对比图
+第12题修正：设计 10 阶全通滤波器均衡群延时 (含优化算法)
 """
-function analyze_group_delay()
-    println("=== 滤波器群延时分析 ===")
+function design_and_analyze_group_delay()
+    println("=== 第12题：群延时均衡设计 (优化中...) ===")
 
     # ==============================
-    # 1. 设计椭圆低通滤波器 (Lowpass)
+    # 1. 设计椭圆低通滤波器
     # ==============================
-    # 规格: N=5, Fp=0.35pi (归一化频率 0.35), Rp=0.8dB, Rs=35dB
     N_lp = 5
-    Wn = 0.35  # 归一化频率 (1.0 = Nyquist, 即 pi)
+    Wn = 0.35  # 归一化频率
     Rp = 0.8
     Rs = 35.0
-
-    println("1. 设计椭圆低通滤波器: Order=$N_lp, Wn=$Wn, Rp=$Rp dB, Rs=$Rs dB")
     
-    # 设计滤波器
-    # DSP.Lowpass(Wn) 中的 Wn 是归一化频率 (0~1)
     lp_responsetype = DSP.Lowpass(Wn)
     lp_designmethod = DSP.Elliptic(N_lp, Rp, Rs)
     lp_filter = DSP.digitalfilter(lp_responsetype, lp_designmethod)
 
     # ==============================
-    # 2. 构建全通滤波器 (Allpass Equalizer)
+    # 2. 优化全通均衡器参数
     # ==============================
-    # 目标：设计 10 阶全通滤波器均衡通带群延时
+    # 全通滤波器阶数 N_ap = 10 (5个二阶节)
+    n_sections = 5 
     
-    N_ap = 10
-    println("2. 初始化全通滤波器结构 (Order=$N_ap)")
+    # 优化目标频率范围：只关注通带 (0 到 0.35pi)
+    w_pass = range(0, stop=Wn*pi, length=100)
+    tau_lp = grpdelay(lp_filter, w_pass)
     
-    # --- [占位符系数] ---
-    # 目前设置为 [1.0, 0, ...] 代表直通
-    a_ap = zeros(Float64, N_ap + 1)
-    a_ap[1] = 1.0 
-    
-    # 全通滤波器的分子系数是分母系数的倒序
-    b_ap = reverse(a_ap)
-    
-    # 创建全通滤波器对象
-    ap_filter = DSP.PolynomialRatio(b_ap, a_ap)
+    # 辅助函数：根据参数构建全通滤波器
+    # 参数格式：[r1, theta1, r2, theta2, ...]
+    function make_allpass(params)
+        total_filter = nothing
+        for i in 1:n_sections
+            r = params[2*i - 1]
+            theta = params[2*i]
+            p = r * exp(im * theta)
+            # 二阶全通节
+            poles = [p, conj(p)]
+            zeros = [1/conj(p), 1/p]
+            # 为了保证实系数，增益通常处理为1，这里简化处理
+            section = ZeroPoleGain(zeros, poles, 1.0)
+            
+            if total_filter === nothing
+                total_filter = section
+            else
+                total_filter = total_filter * section
+            end
+        end
+        return total_filter
+    end
 
-    # ==============================
-    # 3. 计算群延时 (Group Delay)
-    # ==============================
-    println("3. 计算群延时特性...")
-    
-    # 频率点数量
-    n_points = 512
-    
-    # [修复] 显式生成频率向量 (0 到 pi)，避免 grpdelay 返回标量导致的 BoundsError
-    # range 返回的是一个迭代器，collect 转换为数组
-    w_rad = collect(range(0, π, length=n_points))
-    
-    # 计算低通滤波器的群延时
-    # 当传入频率向量时，grpdelay 仅返回延时向量
-    gd_lp = DSP.grpdelay(lp_filter, w_rad)
-    
-    # 计算全通滤波器的群延时
-    gd_ap = DSP.grpdelay(ap_filter, w_rad)
-    
-    # 级联系统的群延时 = 低通延时 + 全通延时
-    gd_total = gd_lp + gd_ap
+    # 代价函数：群延时标准差
+    function cost_function(params)
+        try
+            ap = make_allpass(params)
+            tau_ap = grpdelay(ap, w_pass)
+            return std(tau_lp + tau_ap)
+        catch
+            return Inf
+        end
+    end
 
-    # [优化] 将频率归一化 (0~1) 以便与 Wn 比较和绘图
-    w_norm = w_rad / π
+    # 初始猜测 & 边界
+    initial_params = repeat([0.8, 0.2*pi], n_sections)
+    # 稍微扰动一下初始值避免对称性陷阱
+    for i in 1:length(initial_params); initial_params[i] += 0.01*i; end
     
-    # 提取通带部分的索引用于绘图 (只看通带内部情况)
-    # 因为 Wn 是 0.35 (归一化)，我们对比 w_norm
-    passband_indices = w_norm .<= (Wn * 1.2) #稍微多画一点以便观察截止点
+    lower = repeat([0.0, 0.0], n_sections)
+    upper = repeat([0.99, pi], n_sections)
+
+    # 执行优化
+    res = optimize(cost_function, lower, upper, initial_params, Fminbox(BFGS()), Optim.Options(time_limit=15.0))
+    best_params = Optim.minimizer(res)
     
     # ==============================
-    # 4. 绘制图形
+    # 3. 结果绘图
     # ==============================
-    println("4. 绘制群延时曲线...")
-    TyPlot.clf() # 清除旧图
+    ap_filter = make_allpass(best_params)
     
-    # 绘制低通滤波器的群延时
-    TyPlot.plot(w_norm[passband_indices], gd_lp[passband_indices], "b-", linewidth=2, label="Lowpass Filter Delay")
+    # 绘图频率轴
+    w_plot = range(0, stop=Wn*pi, length=300)
+    tau_lp_plot = grpdelay(lp_filter, w_plot)
+    tau_ap_plot = grpdelay(ap_filter, w_plot)
+    tau_total = tau_lp_plot + tau_ap_plot
     
-    # 绘制级联系统的群延时
-    TyPlot.plot(w_norm[passband_indices], gd_total[passband_indices], "r--", linewidth=1.5, label="Cascaded (LP + AP) Delay")
+    TyPlot.clf()
+    w_norm = w_plot ./ pi
     
-    TyPlot.title("Group Delay in Passband")
-    TyPlot.xlabel("Normalized Frequency (x pi rad/sample)")
+    TyPlot.plot(w_norm, tau_lp_plot, "b--", linewidth=1, label="Original LP Delay")
+    TyPlot.plot(w_norm, tau_total, "r-", linewidth=2, label="Equalized Total Delay")
+    
+    TyPlot.title("Group Delay Equalization (Order 10 Allpass)")
+    TyPlot.xlabel("Normalized Frequency")
     TyPlot.ylabel("Group Delay (samples)")
-    TyPlot.grid(true)
     TyPlot.legend()
+    TyPlot.grid(true)
     
-    # 标记截止频率
-    # TyPlot.axvline(x=Wn, color="k", linestyle="--", label="Cutoff")
-
-    println("完成！请查看绘图窗口。")
+    println("优化完成。通带群延时标准差从 $(round(std(tau_lp_plot), digits=2)) 降低到 $(round(std(tau_total), digits=2))")
 end
 
-# 运行分析
-analyze_group_delay()
+design_and_analyze_group_delay()
 ```
 
 ## 13.编写 4 点滑动平均滤波器程序。原始未受干扰的序列为: $s[n]=3[n(0.8)^{n}],$ 加性噪声信号 d[n] 为随机序列, 幅度 0.6, 受干扰的序列为: $x[n]=s[n]+d[n]$, 分别绘制长度为 40 的原始未受干扰的序列, 噪声序列和受干扰序列, 以及滑动平均滤波器的输出。
@@ -1492,20 +1537,28 @@ println("估算滤波器长度 N: $N")
 println("估算滤波器阶数 M (N-1): $Order")
 println("----------------------------------------")
 
-# 6. (可选) 绘制规格示意图
-# 这是一个简单的图示，用于直观展示通带和阻带的位置
+# 6. 绘制规格示意图（更标准的阶梯/边界显示）
 figure("Filter Specifications")
-# 绘制理想的幅频特性轮廓
-# 修改变量名 freqs 为 freq_specs 以避免与 DSP.freqs 冲突
-freq_specs = [0, fp, fs, Fs/2]
-amps = [1, 1, 0, 0]
-plot(freq_specs, amps, "r--")
+
+# 一次 plot 画多段线（不使用 hold，避免版本差异）
+plot([0, fp],      [1, 1], "r--",      # 通带
+     [fp, fs],     [1, 0], "r--",      # 过渡带（示意）
+     [fs, Fs/2],   [0, 0], "r--",      # 阻带
+     [fp, fp],     [0, 1], "k:",       # fp 竖线
+     [fs, fs],     [0, 1], "k:")       # fs 竖线
+
 title("FIR 低通滤波器设计规格")
 xlabel("频率 (Hz)")
 ylabel("理想幅度")
-text(fp, 1.05, "fp=1500")
-text(fs, 0.1, "fs=1800")
-grid(true)
+grid("on")
+axis("tight")
+xlim([0, Fs/2])
+ylim([-0.1, 1.1])
+
+# 标注位置下移，避免挡标题
+text(fp, 0.92, "fp=1500 Hz")
+text(fs, 0.08, "fs=1800 Hz")
+
 ```
 
 ## 17.编写长度为 5 的中值滤波器程序。原始未受干扰的序列为: $s[n]=3[n(0.8)^{n}]$, 加性噪声信号 d[n] 为随机序列, 幅度 0.6, 分别绘制长度为 40 的受干扰序列, 以及中值滤波器的输出。
@@ -1514,69 +1567,109 @@ grid(true)
 
 ```julia
 using TyPlot
-using Statistics # 导入统计包以使用 median 函数
+using Statistics
+using Random
 
-# 1. 信号生成参数
-N = 40                  # 序列长度
-n = 0:N-1               # 时间索引 (0 到 39)
+# ==========================================
+# 1) 5 点中值滤波器（边界：缩窗）
+# ==========================================
+"""
+    median_filter(signal, L)
 
-# 2. 生成原始信号 s[n]
-# 公式: s[n] = 3 * n * (0.8)^n
-# 注意: Julia 中 .^ 用于逐元素幂运算
-s = 3 .* n .* (0.8).^n
+一维中值滤波器（窗口长度 L 必须为奇数）。
+边界处采用“缩窗”（不补零、不镜像），避免边缘失真。
+"""
+function median_filter(signal::AbstractVector{T}, L::Int) where {T<:Real}
+    @assert L > 0 && isodd(L) "窗口长度 L 必须为正奇数（例如 5）"
 
-# 3. 生成加性噪声 d[n]
-# "幅度 0.6" 通常指均匀分布在 [-0.6, 0.6] 之间的随机噪声
-# rand(N) 生成 [0, 1) 的随机数
-# (rand(N) .- 0.5) .* 2 生成 [-1, 1)
-# 乘以 0.6 得到 [-0.6, 0.6)
-noise_amp = 0.6
-d = (rand(N) .- 0.5) .* 2 .* noise_amp
+    N = length(signal)
+    y = Vector{Float64}(undef, N)
+    half = L ÷ 2
 
-# 生成受干扰序列 x[n]
-x = s .+ d
-
-# 4. 实现长度为 5 的中值滤波器
-# 窗口长度 L = 5，意味着取 n-2, n-1, n, n+1, n+2 的中位数
-L = 5
-half_L = floor(Int, L / 2) # 半窗口长度 = 2
-y = zeros(N) # 初始化输出序列
-
-for i in 1:N
-    # 确定当前窗口的起始和结束索引 (处理边界情况)
-    # Julia 索引从 1 开始，对应 n = i-1
-    # 窗口范围: [max(1, i - half_L), min(N, i + half_L)]
-    start_idx = max(1, i - half_L)
-    end_idx = min(N, i + half_L)
-    
-    # 提取窗口内的数据
-    window_data = x[start_idx:end_idx]
-    
-    # 计算中值并赋值
-    y[i] = median(window_data)
+    @inbounds for i in 1:N
+        a = max(1, i - half)
+        b = min(N, i + half)
+        @views y[i] = median(signal[a:b])
+    end
+    return y
 end
 
-# 5. 绘图
-figure("Median Filter Analysis")
+# ==========================================
+# 2) 题目数据：s[n] 与噪声 d[n]
+# ==========================================
+N = 40
+n = collect(0:N-1)                 # 用 collect 避免绘图函数对 Range 支持不一致
 
-# 子图 1: 受干扰的序列 x[n]
+# s[n] = 3 * n * (0.8)^n
+s = 3.0 .* n .* (0.8) .^ n
+
+# d[n]：幅度 0.6 的随机序列（均匀分布在 [-0.6, 0.6]）
+noise_amp = 0.6
+Random.seed!(2026)                 # 固定随机种子：每次运行结果一致，便于验收/调参
+d = noise_amp .* (2 .* rand(N) .- 1)
+
+# 受干扰序列 x[n]
+x = s .+ d
+
+# ==========================================
+# 3) 5 点中值滤波
+# ==========================================
+L = 5
+y = median_filter(x, L)
+
+# ==========================================
+# 4) 绘图：按题意分别画 40 点“受干扰序列”和“滤波输出”
+#    （并额外用虚线叠加 s[n] 方便对比，噪声会更明显）
+# ==========================================
+figure("Median Filter (L=5)", figsize=(10, 8))
+
+# (1) 受干扰序列
 subplot(2, 1, 1)
-stem(n, x, "b-o", label="受干扰序列")
-# 可选: 绘制原始纯净信号作为参考 (虚线)
-plot(n, s, "g--", label="原始信号") 
-title("受干扰序列 (原始信号 + 噪声)")
+# TyPlot 的 basefmt 不支持 " "（空格式）。这里先画 stem，然后把 baseline 隐藏掉。
+h1 = stem(n, x, markerfmt="bo", linefmt="b-", label="x[n]=s[n]+d[n]")
+try
+    c1 = (h1 isa AbstractVector && length(h1) == 1) ? h1[1] : h1
+    if PyCall.pyhasattr(c1, "baseline")
+        c1.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, s, "g--", linewidth=2, alpha=0.8, label="s[n] (无噪声)")
+# 额外把噪声画出来（看不清噪声时非常有用）
+plot(n, d, "k:", linewidth=1.5, alpha=0.8, label="d[n] (噪声)")
+
+title("长度为 40 的受干扰序列（噪声幅度 ±0.6）")
 ylabel("幅度")
-legend()
+legend(loc="best")
 grid(true)
 
-# 子图 2: 中值滤波器输出 y[n]
+# (2) 中值滤波输出
 subplot(2, 1, 2)
-stem(n, y, "r-o", label="滤波后输出")
-title("5点中值滤波器输出")
-xlabel("样本 n")
+h2 = stem(n, y, markerfmt="ro", linefmt="r-", label="y[n] (5点中值滤波输出)")
+try
+    c2 = (h2 isa AbstractVector && length(h2) == 1) ? h2[1] : h2
+    if PyCall.pyhasattr(c2, "baseline")
+        c2.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, s, "g--", linewidth=2, alpha=0.8, label="s[n] (无噪声)")
+
+title("5 点中值滤波器输出")
+xlabel("样本序号 n")
 ylabel("幅度")
-legend()
+legend(loc="best")
 grid(true)
+
+try
+    gcf().tight_layout()
+catch
+end
+
+
+# 如果你只想严格按题意“分别绘制”且不叠加 s[n] 和 d[n]：
+# - 把上面两个 subplot 里的 plot(n, s, ...) 和 plot(n, d, ...) 注释掉即可。
+
 ```
 
 ## 18.已知 16 点序列 x[n] 的 DFT 为: $X[k]=\begin{cases}k/16&0\le k\le15\\ 0&otherwise\end{cases}$ 。绘制序列 x[n] 的实部和虚部。
@@ -1851,74 +1944,91 @@ grid("on")
 ## 22.已知序列 x[n] 为 $x[n] = \cos(\pi n/2), 0\le n\le15$, 绘制序列 x[n] 的 DFT 和 DTFT 的幅度。
 
 ```julia
-# 导入必要的包
 using TyPlot
-using FFTW # 用于 fft, fftshift。如果未安装，请运行 import Pkg; Pkg.add("FFTW")
+using FFTW
 
-# 1. 定义序列 x[n]
-# 范围: 0 <= n <= 15
-n = 0:15
-# x[n] = cos(pi * n / 2)
-# 注意使用 . 进行向量化运算
+# ==========================================
+# 1. 信号定义
+# ==========================================
+# 题目: x[n] = cos(pi * n / 2), 0 <= n <= 15
+N = 16
+n = 0:N-1
 x = cos.(pi .* n ./ 2)
 
-# 2. 计算 DFT (N点离散傅里叶变换)
-# 直接对 16 点序列进行 FFT
+# ==========================================
+# 2. 计算 DFT (离散傅里叶变换)
+# ==========================================
+# DFT 计算的是离散频点 k = 0, 1, ..., N-1
 X_k = fft(x)
-# 取幅度
 mag_X_k = abs.(X_k)
-# 定义 DFT 的频率索引轴 k
-k = 0:length(x)-1
+k = 0:N-1
 
-# 3. 计算 DTFT (离散时间傅里叶变换)
-# DTFT 是连续频谱。为了在计算机中绘制，我们通常通过对序列进行大量补零
-# 然后做 FFT 来获得高密度的频谱样本作为近似。
-K = 1024 # 定义高分辨率的点数
-# 构造补零后的序列: 原始 x 加上 (K - N) 个零
-x_padded = [x; zeros(K - length(x))]
+# ==========================================
+# 3. 计算 DTFT (离散时间傅里叶变换) - 近似
+# ==========================================
+# DTFT 是连续频谱 X(e^jw)。
+# 为了在计算机中绘制，我们对信号进行大量补零，
+# 然后使用 FFT 计算出高密度的频域样本。
 
-# 计算补零后的 FFT
+# 设置高分辨率点数 (比如 1024 或 2048)
+K = 2048 
+
+# 构造补零后的信号: [原始信号, 0, 0, ...]
+x_padded = [x; zeros(K - N)]
+
+# 计算 FFT 并移位，使零频率位于中心
 X_dtft = fft(x_padded)
-
-# 使用 fftshift 将零频率分量移到频谱中心
 X_dtft_shifted = fftshift(X_dtft)
-
-# 取幅度
 mag_X_dtft = abs.(X_dtft_shifted)
 
-# 定义 DTFT 的频率轴 omega，范围从 -pi 到 pi
-w = range(-pi, stop=pi, length=K)
+# 生成归一化频率轴 w / pi
+# 范围: -1 到 1 (对应 -pi 到 pi)
+# 这样画图时，x轴为 0.5 就代表 0.5pi (即 pi/2)
+w_normalized = range(-1, 1, length=K)
 
+# ==========================================
 # 4. 绘图
-figure("DFT and DTFT Analysis")
+# ==========================================
+figure("DFT and DTFT Analysis", figsize=(10, 8))
 
-# 子图 1: 原始序列 x[n]
+# 子图 1: 时域序列 x[n]
 subplot(3, 1, 1)
-stem(n, x)
-title("原始序列 x[n] = cos(\\pi n / 2)")
+# 修正: 移除了不兼容的 basefmt 参数
+stem(n, x, "b-o", label="x[n]")
+title("时域序列 x[n] = cos(\\pi n / 2)")
 xlabel("n")
-ylabel("x[n]")
-grid("on")
+ylabel("幅度")
+grid(true)
+xlim([-1, 16])
 
-# 子图 2: DFT 幅度谱 |X[k]|
+# 子图 2: DFT 幅度谱 |X[k]| (N点)
 subplot(3, 1, 2)
-stem(k, mag_X_k)
+# 修正: 移除了不兼容的 basefmt 参数
+stem(k, mag_X_k, "r-o", label="|X[k]|")
 title("DFT 幅度谱 |X[k]| (N=16)")
-xlabel("k (频率索引)")
-ylabel("|X[k]|")
-grid("on")
+xlabel("频率索引 k")
+ylabel("幅度")
+grid(true)
+xlim([0, 15])
+# 解释: 对于 cos(pi*n/2)，频率是 1/4 fs。
+# k = N * f = 16 * 0.25 = 4。所以 k=4 和 k=12 (16-4) 处有峰值。
 
-# 子图 3: DTFT 幅度谱 |X(e^{j\\omega})|
+# 子图 3: DTFT 幅度谱 |X(e^{j\\omega})| (归一化频率)
 subplot(3, 1, 3)
-plot(w, mag_X_dtft)
-title("DTFT 幅度谱 (近似)")
-xlabel("\\omega (弧度/样本)")
-ylabel("|X(e^{j\\omega})|")
-# 设置 x 轴范围为 -pi 到 pi
-xlim([-pi, pi])
-grid("on")
+plot(w_normalized, mag_X_dtft, "g", linewidth=2, label="|X(e^{j\\omega})|")
+title("DTFT 幅度谱 (频率轴归一化: \\times \\pi rad/sample)")
+xlabel("归一化频率 (\\omega / \\pi)") # 这样轴刻度 0.5 就代表 pi/2
+ylabel("幅度")
+grid(true)
+xlim([-1, 1])
 
-# 调整布局以防止重叠 (如果支持)
+# 叠加显示 DFT 的点在 DTFT 上对应的位置 (为了展示 DFT 是 DTFT 的采样)
+# DFT 的 k 对应模拟频率 w_k = 2*pi*k/N
+# 归一化频率 w_norm = w_k / pi = 2*k/N
+# 注意 fftshift 后的范围问题，为了简单展示，这里只画 DTFT 曲线
+# 峰值应该出现在 +/- 0.5 处 (因为 pi/2 / pi = 0.5)
+
+# 自动调整布局
 # tight_layout()
 ```
 
@@ -1929,92 +2039,141 @@ grid("on")
 ## 用 MATLAB 将系统函数分解为二次多项式之积, 并写出各二次多项式的表达式。
 
 ```julia
-using Polynomials # 用于多项式求根
+import Pkg
+# 检查依赖
+try
+    using Polynomials
+catch
+    println("正在安装 Polynomials...")
+    Pkg.add("Polynomials")
+    using Polynomials
+end
 using Printf
+using LinearAlgebra
 
-# 1. 定义 FIR 滤波器系数
-# H(z) = 2.4 + 3.2z^-1 + 1.5z^-2 + 0.8z^-3 + 1.4z^-4 + 3.6z^-5 + 5.2z^-6
-# 对应系数向量 b
+println("=== FIR 系统函数二阶分解 (SOS) ===")
+
+# 1. 定义系数
+# H(z) = 2.4 + 3.2z^-1 + ... + 5.2z^-6
 b = [2.4, 3.2, 1.5, 0.8, 1.4, 3.6, 5.2]
+println("原始系数: $b")
 
-# 2. 求系统函数的零点
-# 构建多项式 P(z) = 2.4*z^6 + ... + 5.2
-# 需要反转 b 的顺序传入 Polynomial (因为 Polynomials 系数是从低次到高次)
+# 2. 求根
+# 构造多项式 P(z)
 poly_coeffs = reverse(b)
 P = Polynomial(poly_coeffs)
-# 使用 Polynomials.roots 求根
+
+# 【修复】显式调用 Polynomials.roots 以避免与 TyMath.roots 冲突
 zeros_z = Polynomials.roots(P)
 
-# 3. 手动分解为二阶节 (SOS)
-# 策略：分离实根和复根，复根按共轭配对，实根两两配对
+# 【修复】字符串插值语法修正：使用 $(...) 而不是 ${...}
+println("\n找到 $(length(zeros_z)) 个根:")
 
-# 设置容差判断虚部
-tol = 1e-5
-complex_roots = zeros_z[abs.(imag.(zeros_z)) .> tol]
-real_roots = zeros_z[abs.(imag.(zeros_z)) .<= tol]
-
-# 对复根按实部排序，确保共轭对相邻
-sort!(complex_roots, by=real)
-# 对实根排序
-sort!(real_roots)
-
-# 存储配对结果
+# 3. 稳健的根配对算法 (Conjugate Pairing)
+# 目的：确保配对后的系数是实数
+complex_roots = ComplexF64.(zeros_z)
 pairs = []
+used = falses(length(complex_roots))
 
-# 配对复根
-for i in 1:2:length(complex_roots)
-    if i+1 <= length(complex_roots)
-        push!(pairs, (complex_roots[i], complex_roots[i+1]))
+for i in 1:length(complex_roots)
+    if used[i]; continue; end
+    
+    root1 = complex_roots[i]
+    used[i] = true
+    
+    # 在剩余的根中寻找最接近共轭的一个 (实部接近，虚部相反)
+    best_idx = -1
+    min_err = Inf
+    
+    for j in (i+1):length(complex_roots)
+        if used[j]; continue; end
+        
+        root2 = complex_roots[j]
+        # 理想共轭对误差: |r1 - conj(r2)|
+        err = abs(root1 - conj(root2))
+        
+        if err < min_err
+            min_err = err
+            best_idx = j
+        end
+    end
+    
+    if best_idx != -1
+        root2 = complex_roots[best_idx]
+        used[best_idx] = true
+        push!(pairs, (root1, root2))
+    else
+        # 没找到配对
+        println("警告：根 $root1 未找到最佳配对")
+        push!(pairs, (root1, 0.0)) 
     end
 end
 
-# 配对实根
-for i in 1:2:length(real_roots)
-    if i+1 <= length(real_roots)
-        push!(pairs, (real_roots[i], real_roots[i+1]))
-    end
-end
+# 4. 计算二阶节系数并输出
+# H(z) = G * product( 1 - (r1+r2)z^-1 + (r1*r2)z^-2 )
 
-# 4. 打印结果
-println("系统函数 H(z) 分解为 3 个二次多项式之积：")
-# H(z) = k * H1(z) * H2(z) * H3(z)
-# 我们将总增益 k = b[1] = 2.4 分配给第一节
-k_total = b[1]
+gain_total = b[1] # 2.4
+sos_coeffs = []   # 存储各节系数以便验证
 
-println("形式: H(z) = H1(z) * H2(z) * H3(z)")
-println("-"^50)
+println("\n分解结果 (H(z) = H1(z) * H2(z) * H3(z)): \n")
 
 for (i, pair) in enumerate(pairs)
     r1, r2 = pair
     
-    # 计算二阶节系数
-    # Section = (1 - r1*z^-1) * (1 - r2*z^-1)
-    #         = 1 - (r1+r2)z^-1 + (r1*r2)z^-2
-    # 对应的系数为:
-    # Constant: 1
-    # z^-1: -(r1 + r2)
-    # z^-2: r1 * r2
+    # 二阶节系数: 1, -(r1+r2), r1*r2
+    # 我们要保证系数是实数
+    a1 = -real(r1 + r2)
+    a2 = real(r1 * r2)
     
-    coeff_z1 = -real(r1 + r2)
-    coeff_z2 = real(r1 * r2)
+    # 将总增益分配给第一节
+    g = (i == 1) ? gain_total : 1.0
     
-    # 仅对第一节应用增益 k
-    gain = (i == 1) ? k_total : 1.0
+    c0 = 1.0 * g
+    c1 = a1 * g
+    c2 = a2 * g
     
-    c0 = 1.0 * gain
-    c1 = coeff_z1 * gain
-    c2 = coeff_z2 * gain
+    # 存入列表用于后续卷积验证 [c0, c1, c2]
+    push!(sos_coeffs, [c0, c1, c2])
     
-    # 格式化符号
+    # 格式化输出
     sign1 = c1 >= 0 ? "+" : "-"
     sign2 = c2 >= 0 ? "+" : "-"
     
-    @printf("H%d(z) = %.4f %s %.4fz^-1 %s %.4fz^-2\n", 
+    @printf("H%d(z) = %.4f %s %.4fz^{-1} %s %.4fz^{-2}\n", 
             i, c0, sign1, abs(c1), sign2, abs(c2))
 end
 
-println("-"^50)
-println("验证提示：各节系数相乘（卷积）应近似等于原系数 [2.4, 3.2, ...]")
+# 5. 验证结果 (卷积复原)
+# 手动实现卷积 conv
+function my_conv(u, v)
+    n = length(u)
+    m = length(v)
+    w = zeros(n + m - 1)
+    for i in 1:n
+        for j in 1:m
+            w[i+j-1] += u[i] * v[j]
+        end
+    end
+    return w
+end
+
+# 逐步卷积所有二阶节
+reconstructed_b = sos_coeffs[1]
+for i in 2:length(sos_coeffs)
+    global reconstructed_b = my_conv(reconstructed_b, sos_coeffs[i])
+end
+
+println("\n" * "-"^30)
+println("验证环节:")
+println("原始系数: $(round.(b, digits=4))")
+println("复原系数: $(round.(reconstructed_b, digits=4))")
+
+error_norm = norm(b - reconstructed_b)
+if error_norm < 1e-10
+    println(">>> 验证成功！误差极小。")
+else
+    println(">>> 警告：存在误差 $error_norm")
+end
 ```
 
 ## 24.已知 FIR 数字低通滤波器的性能指标为: 通带截止频率 0.35$\pi$, 阻带截止频率 0.45$\pi$, 通带和阻带波纹 $\delta=0.01$。设计满足该滤波器的 Kaiser's 窗函数, 绘制出 Kaiser's 窗函数的增益响应。
@@ -2265,138 +2424,219 @@ grid("on")
 ## 27.已知 IIR 滤波器的系统函数为: $H(z)=\frac{2+5z^{-1}+z^{-2}-3z^{-3}+4z^{-4}+6z^{-5}}{1+3z^{-1}-5z^{-2}+2z^{-3}-4z^{-4}+3z^{-5}}$。用 MATLAB 将系统函数表示为级联型结构形式, 并写出各级联子系统的表达式。
 
 ```julia
-using Polynomials
+using LinearAlgebra
 using Printf
 
-# 1. 定义系统函数系数
-# H(z) = B(z) / A(z)
-# 分子系数 b: 2 + 5z^-1 + 1z^-2 - 3z^-3 + 4z^-4 + 6z^-5
-b = [2.0, 5.0, 1.0, -3.0, 4.0, 6.0]
-# 分母系数 a: 1 + 3z^-1 - 5z^-2 + 2z^-3 - 4z^-4 + 3z^-5
-a = [1.0, 3.0, -5.0, 2.0, -4.0, 3.0]
+# =========================================================
+# 1) 求多项式根（降幂系数）：c0*z^n + c1*z^(n-1) + ... + cn
+# =========================================================
+function roots_desc(coeffs::AbstractVector{<:Real})
+    n = length(coeffs) - 1
+    @assert n >= 1 "多项式阶数必须≥1"
+    c0 = coeffs[1]
+    @assert abs(c0) > 1e-12 "最高次系数不能为0"
 
-println("原系统函数 H(z):")
-println("分子 b: ", b)
-println("分母 a: ", a)
-println("-"^60)
+    c = coeffs ./ c0  # 归一化，使最高次系数=1：z^n + c1 z^(n-1)+...+cn
+    C = zeros(ComplexF64, n, n)
 
-# 2. 求零点和极点
-# 为了求 z 的根，我们需要构建多项式。
-# H(z) 的各项是 z^-k，乘以 z^N 后变成关于 z 的多项式。
-# 系数向量需要反转（因为 Polynomials 默认系数顺序是 [z^0, z^1, ..., z^N]）
-zeros_z = Polynomials.roots(Polynomial(reverse(b)))
-poles_p = Polynomials.roots(Polynomial(reverse(a)))
+    # companion matrix:
+    # [ 0 0 ... 0 -cn
+    #   1 0 ... 0 -c(n-1)
+    #   0 1 ... 0 -c(n-2)
+    #   ...
+    #   0 0 ... 1 -c1 ]
+    for i in 2:n
+        C[i, i-1] = 1.0
+    end
+    C[:, n] .= -reverse(c[2:end])  # [-cn, ..., -c1]
 
-# 3. 零极点配对 (Pairing) 算法
-# 目标：将零点和极点分组，每组包含 2 个零点和 2 个极点（不足补0），形成二阶节
-function pair_roots_complex(r_list)
-    # 分离实根和复根
-    tol = 1e-5
-    complex_r = r_list[abs.(imag.(r_list)) .> tol]
-    real_r = r_list[abs.(imag.(r_list)) .<= tol]
-    
-    # 简单的排序策略：按实部排序
-    sort!(complex_r, by=real)
-    # 修改：Julia 无法直接比较复数大小，即使它们近似为实数。
-    # 必须显式指定按实部 (by=real) 进行排序。
-    sort!(real_r, by=real)
-    
-    pairs = []
-    
-    # 配对复根 (共轭对)
+    return eigvals(C)
+end
+
+# =========================================================
+# 2) 共轭配对：输出每个section的根(1个或2个)
+#    - 复根按 conjugate 配对（保证二阶节实系数）
+#    - 实根两两配对，若剩一个则形成一阶节
+# =========================================================
+function pair_conjugates(r::Vector{ComplexF64}; tol=1e-6)
+    r = copy(r)
+    used = falses(length(r))
+    pairs = Vector{Vector{ComplexF64}}()
+
+    # 先处理复根（找共轭）
+    for i in eachindex(r)
+        used[i] && continue
+        if abs(imag(r[i])) > tol
+            j = findfirst(j -> !used[j] && j != i && abs(r[j] - conj(r[i])) < 1e-4, eachindex(r))
+            j === nothing && error("未找到共轭根：$(r[i])（可能 tol 太小或根计算异常）")
+            push!(pairs, [r[i], r[j]])
+            used[i] = true
+            used[j] = true
+        end
+    end
+
+    # 再处理实根
+    real_roots = ComplexF64[]
+    for i in eachindex(r)
+        used[i] && continue
+        if abs(imag(r[i])) <= tol
+            push!(real_roots, ComplexF64(real(r[i]), 0.0))
+            used[i] = true
+        end
+    end
+    sort!(real_roots, by=x->real(x))
+
     i = 1
-    while i < length(complex_r)
-        push!(pairs, (complex_r[i], complex_r[i+1]))
-        i += 2
+    while i <= length(real_roots)
+        if i == length(real_roots)
+            push!(pairs, [real_roots[i]])        # 一阶节
+            i += 1
+        else
+            push!(pairs, [real_roots[i], real_roots[i+1]])  # 二阶节
+            i += 2
+        end
     end
-    # 如果剩下一个复根 (理论上实系数多项式不会发生，除非数值误差)，暂且放入实根处理
-    if i == length(complex_r)
-        push!(real_r, complex_r[end])
-    end
-    
-    # 配对实根
-    j = 1
-    while j < length(real_r)
-        push!(pairs, (real_r[j], real_r[j+1]))
-        j += 2
-    end
-    
-    # 如果还剩一个实根 (奇数阶情况)
-    if j == length(real_r)
-        # 配对一个 0 (在 z 平面原点，意味着没有该项)
-        # 注意：这里我们只存储根。之后转换系数时，单个根 r 对应 (z-r)
-        push!(pairs, (real_r[end], nothing))
-    end
-    
+
     return pairs
 end
 
-zero_pairs = pair_roots_complex(zeros_z)
-pole_pairs = pair_roots_complex(poles_p)
-
-# 确保零点对和极点对数量一致 (不足的补 1，即 (z-0)(z-0) 对应的系数是 1)
-# 这里假设分子分母阶数相同或相近
-n_sections = max(length(zero_pairs), length(pole_pairs))
-
-# 4. 构建级联结构 (SOS) 并输出
-# 计算总增益 k = b[0] / a[0]
-k_gain = b[1] / a[1]
-
-println("级联结构分解结果 (H(z) = H1(z) * H2(z) * ...):")
-println("注意: 第一个子系统包含了总增益 k = $(k_gain)")
-println("-"^60)
-
-for i in 1:n_sections
-    # 获取零点对
-    z_pair = i <= length(zero_pairs) ? zero_pairs[i] : (0.0, 0.0)
-    # 获取极点对
-    p_pair = i <= length(pole_pairs) ? pole_pairs[i] : (0.0, 0.0)
-    
-    # --- 计算分子系数 (Numerator) ---
-    # (1 - z1*z^-1)(1 - z2*z^-1) = 1 - (z1+z2)z^-1 + (z1*z2)z^-2
-    if z_pair[2] === nothing
-        # 单实根情况: (1 - z1*z^-1)
-        z1 = z_pair[1]
-        b_sec = [1.0, -real(z1), 0.0]
+# =========================================================
+# 3) 由 z 平面根构造 z^-1(=q) 形式的节系数
+#    若节含根 z1,z2：
+#       (1 - z1 q)(1 - z2 q) = 1 -(z1+z2)q + (z1 z2) q^2
+#    若节含单根 z1：
+#       (1 - z1 q)
+# =========================================================
+function section_coeff_from_zroots(zroots::Vector{ComplexF64})
+    if length(zroots) == 2
+        z1, z2 = zroots[1], zroots[2]
+        b0 = 1.0
+        b1 = -real(z1 + z2)
+        b2 =  real(z1 * z2)
+        return [b0, b1, b2]  # 升幂：b0 + b1 q + b2 q^2
+    elseif length(zroots) == 1
+        z1 = zroots[1]
+        b0 = 1.0
+        b1 = -real(z1)
+        return [b0, b1]      # 一阶：b0 + b1 q
     else
-        z1, z2 = z_pair
-        b_sec = [1.0, -real(z1 + z2), real(z1 * z2)]
+        return [1.0]         # 空节（不会用到）
     end
-    
-    # --- 计算分母系数 (Denominator) ---
-    if p_pair[2] === nothing
-        p1 = p_pair[1]
-        a_sec = [1.0, -real(p1), 0.0]
-    else
-        p1, p2 = p_pair
-        a_sec = [1.0, -real(p1 + p2), real(p1 * p2)]
-    end
-    
-    # --- 分配增益 ---
-    if i == 1
-        b_sec = b_sec .* k_gain
-    end
-    
-    # --- 格式化输出 ---
-    # 辅助函数：格式化项
-    function fmt_term(val, power)
-        if abs(val) < 1e-6 return "" end # 忽略极小值
-        sign_str = val >= 0 ? "+" : "-"
-        val_abs = abs(val)
-        z_str = power == 0 ? "" : "z^-$power"
-        return " $sign_str $(@sprintf("%.4f", val_abs))$z_str"
-    end
-    
-    # 拼接字符串
-    num_str = @sprintf("%.4f", b_sec[1]) * fmt_term(b_sec[2], 1) * fmt_term(b_sec[3], 2)
-    den_str = @sprintf("%.4f", a_sec[1]) * fmt_term(a_sec[2], 1) * fmt_term(a_sec[3], 2)
-    
-    println("子系统 H$i(z):")
-    println("        $num_str")
-    println("  ----------------------------")
-    println("        $den_str")
-    println("")
 end
+
+# =========================================================
+# 4) 多项式卷积（升幂系数：常数项在前）
+# =========================================================
+function conv(a::Vector{Float64}, b::Vector{Float64})
+    y = zeros(Float64, length(a) + length(b) - 1)
+    for i in eachindex(a)
+        for j in eachindex(b)
+            y[i+j-1] += a[i] * b[j]
+        end
+    end
+    return y
+end
+
+# =========================================================
+# 5) 主程序：题目系统
+#    H(z)= (2+5z^-1+z^-2-3z^-3+4z^-4+6z^-5) / (1+3z^-1-5z^-2+2z^-3-4z^-4+3z^-5)
+# =========================================================
+b = [2.0, 5.0, 1.0, -3.0, 4.0, 6.0]   # B(q), q=z^-1, 升幂
+a = [1.0, 3.0, -5.0, 2.0, -4.0, 3.0]  # A(q), 升幂
+
+# z 平面零极点来自：z^5 B(1/z) 与 z^5 A(1/z)
+# 它们的降幂系数正好是 [b0,b1,...,b5] 与 [a0,a1,...,a5]（对应 z^5 + ... + 常数）
+Bz_desc = b               # 2 z^5 +5 z^4 +... +6
+Az_desc = a               # 1 z^5 +3 z^4 +... +3
+
+zzeros = roots_desc(Bz_desc)
+zpoles = roots_desc(Az_desc)
+
+println("z-plane zeros:")
+println.(round.(zzeros, digits=6))
+println("\nz-plane poles:")
+println.(round.(zpoles, digits=6))
+
+# 配对成级联节
+zero_pairs = pair_conjugates(zzeros)
+pole_pairs = pair_conjugates(zpoles)
+
+# 级联节数量（对齐：不足的补1）
+S = max(length(zero_pairs), length(pole_pairs))
+while length(zero_pairs) < S
+    push!(zero_pairs, ComplexF64[])  # 表示“无零点”的节 => 分子=1
+end
+while length(pole_pairs) < S
+    push!(pole_pairs, ComplexF64[])  # 表示“无极点”的节 => 分母=1
+end
+
+# 总增益（常数项比值）
+k = b[1] / a[1]
+
+println("\n==============================")
+println("级联型结构：H(z) = k * Π H_i(z)")
+@printf("k = %.6f\n", k)
+println("==============================\n")
+
+# 构造并打印每个子系统
+num_sections = Vector{Vector{Float64}}()
+den_sections = Vector{Vector{Float64}}()
+
+for i in 1:S
+    bn = section_coeff_from_zroots(zero_pairs[i])
+    ad = section_coeff_from_zroots(pole_pairs[i])
+
+    push!(num_sections, bn)
+    push!(den_sections, ad)
+
+    # 打印表达式（按 z^-1）
+    if length(bn) == 3
+        @printf("H_%d(z) 分子:  1 %+ .6f z^-1 %+ .6f z^-2\n", i, bn[2], bn[3])
+    elseif length(bn) == 2
+        @printf("H_%d(z) 分子:  1 %+ .6f z^-1\n", i, bn[2])
+    else
+        @printf("H_%d(z) 分子:  1\n", i)
+    end
+
+    if length(ad) == 3
+        @printf("      分母:  1 %+ .6f z^-1 %+ .6f z^-2\n\n", ad[2], ad[3])
+    elseif length(ad) == 2
+        @printf("      分母:  1 %+ .6f z^-1\n\n", ad[2])
+    else
+        @printf("      分母:  1\n\n")
+    end
+end
+
+function check_reconstruct(num_sections, den_sections, k, b, a)
+    # 6) 重构校验：把各节卷起来，检查是否回到原 b,a
+    b_rec = [1.0]
+    a_rec = [1.0]
+    for i in 1:length(num_sections)
+        b_rec = conv(b_rec, num_sections[i])
+        a_rec = conv(a_rec, den_sections[i])
+    end
+    b_rec .*= k
+
+    while length(b_rec) < length(b)
+        push!(b_rec, 0.0)
+    end
+    while length(a_rec) < length(a)
+        push!(a_rec, 0.0)
+    end
+
+    println("===== 重构校验（应与原系数一致）=====")
+    println("原 b = ", b)
+    println("重构b = ", round.(b_rec, digits=6))
+    println("原 a = ", a)
+    println("重构a = ", round.(a_rec, digits=6))
+
+    err_b = maximum(abs.(b_rec[1:length(b)] .- b))
+    err_a = maximum(abs.(a_rec[1:length(a)] .- a))
+    @printf("max|Δb| = %.3e,  max|Δa| = %.3e\n", err_b, err_a)
+end
+
+check_reconstruct(num_sections, den_sections, k, b, a)
+
 ```
 
 
@@ -2405,118 +2645,128 @@ end
 
 ```julia
 using TyPlot
-using DSP
 using FFTW
-# 移除 SpecialFunctions 引用以避免命名冲突
 
-# 1. 滤波器性能指标
-# 高通滤波器
-ws = 0.45 * pi  # 阻带截止频率
-wp = 0.55 * pi  # 通带截止频率
-delta = 0.04    # 波纹 (通带和阻带相同)
+# ==========================================
+# 0. 核心算法: 手动实现 Kaiser 窗
+# ==========================================
+# 目的: 避免依赖 DSP.jl 和 SpecialFunctions.jl，确保在 MWorks 中直接运行
 
-# 2. 计算参数
-# 截止频率 wc (取中心)
-wc = (ws + wp) / 2
+function my_besseli0(x)
+    s = 1.0; term = 1.0; x_half_sq = (x / 2)^2
+    for k in 1:25
+        term *= x_half_sq / (k^2); s += term
+        if term < 1e-12 * s; break; end
+    end
+    return s
+end
 
-# 过渡带宽度 dw
+function my_kaiser(M::Int, beta::Float64)
+    w = zeros(M); alpha = (M - 1) / 2.0; I0_beta = my_besseli0(beta)
+    for n in 0:M-1
+        val = beta * sqrt(1 - ((n - alpha) / alpha)^2)
+        val = max(0.0, abs(val)) 
+        w[n+1] = my_besseli0(val) / I0_beta
+    end
+    return w
+end
+
+# ==========================================
+# 1. 滤波器设计计算
+# ==========================================
+# 指标
+wp = 0.55 * pi  # 通带截止
+ws = 0.45 * pi  # 阻带截止
+delta = 0.04    # 波纹
+
+# 中间参数
+wc = (wp + ws) / 2
 dw = abs(wp - ws)
-
-# 阻带衰减 A (dB)
 A = -20 * log10(delta)
-println("设计参数:")
-println("  目标衰减 A = $(round(A, digits=2)) dB")
-println("  截止频率 wc = $(wc/pi) * pi")
-println("  过渡带 dw = $(dw/pi) * pi")
 
-# 估算阶数 N (使用 Kaiser 经验公式)
-# N = (A - 8) / (2.285 * dw)
+# 计算 Beta
+if A > 50; beta = 0.1102 * (A - 8.7)
+elseif A >= 21; beta = 0.5842 * (A - 21)^0.4 + 0.07886 * (A - 21)
+else; beta = 0.0; end
+
+# 计算阶数 N
 N_est = (A - 8) / (2.285 * dw)
 N = ceil(Int, N_est)
-# 保证 N 为偶数 (滤波器长度 M 为奇数)，以保证 Type I FIR (对称，中心不为0)
-# 高通滤波器通常需要 Type I (奇数长度 symmetric) 或 Type IV (偶数长度 antisymmetric)
-# 这里选择奇数长度 (Type I)
-if N % 2 != 0
-    N += 1
-end
-M = N + 1 # 滤波器长度 (Tap 数)
+# 修正: 高通滤波器必须是偶数阶 (奇数长度 Type I)
+if N % 2 != 0; N += 1; end 
+M = N + 1
+
+println("---------------------------")
+println("设计结果:")
+println("  阻带衰减 A = $(round(A, digits=2)) dB")
 println("  滤波器阶数 N = $N (长度 M = $M)")
+println("  Kaiser Beta = $(round(beta, digits=4))")
+println("---------------------------")
 
-# 计算 beta 参数
-# 将变量名 beta 修改为 beta_val 避免与函数名冲突
-if A > 50
-    beta_val = 0.1102 * (A - 8.7)
-elseif A >= 21
-    beta_val = 0.5842 * (A - 21)^0.4 + 0.07886 * (A - 21)
-else
-    beta_val = 0.0
+# 计算系数 h[n]
+alpha_val = N / 2
+n_seq = 0:N
+h_ideal = zeros(M)
+for i in 1:M
+    val = n_seq[i]
+    if val == alpha_val
+        h_ideal[i] = 1.0 - (wc / pi)
+    else
+        m_val = val - alpha_val
+        h_ideal[i] = -sin(wc * m_val) / (pi * m_val)
+    end
 end
-println("  Kaiser 参数 beta = $(round(beta_val, digits=4))")
+# 加窗
+h = h_ideal .* my_kaiser(M, beta)
 
-# 3. 构造理想高通滤波器 h_d[n]
-# 理想高通 = 延迟脉冲 - 理想低通
-# h_hp[n] = delta[n - tau] - (wc/pi) * sinc((wc/pi) * (n - tau))
-tau = (M - 1) / 2
-n = 0:(M-1)
+# ==========================================
+# 2. 频率响应计算
+# ==========================================
+K = 2048
+H = fft([h; zeros(K - M)])
+H_shifted = fftshift(H)
 
-# 注意：Julia 的 sinc(x) 定义为 sin(pi*x)/(pi*x)
-# 公式中的 sinc 参数需要归一化
-# 理想低通部分系数
-h_lp = (wc / pi) .* sinc.((wc / pi) .* (n .- tau))
+# 频率轴 (转换为数组以确保绘图兼容性)
+freqs = collect(range(-1, 1, length=K))
 
-# 理想高通系数
-h_d = -h_lp
-# 在中心点 (n = tau) 加上 1 (即 delta 函数)
-# 注意索引，Julia 是 1-based，但在 n 向量中我们已经定义了 0 到 M-1
-# tau 对应的索引是 tau + 1
-center_idx = Int(tau) + 1
-h_d[center_idx] += 1.0
+# 幅度响应 (dB)
+mag_H = abs.(H_shifted)
+gain_dB = 20 .* log10.(mag_H .+ 1e-12) 
 
-# 4. 生成 Kaiser 窗并加窗
-w = kaiser(M, beta_val)
-h = h_d .* w
+# ==========================================
+# 3. 绘图结果
+# ==========================================
+figure("High-pass Filter Design", figsize=(10, 8))
 
-# 5. 计算增益响应
-nfft = 1024
-# 补零
-h_padded = [h; zeros(nfft - length(h))]
-H = fft(h_padded)
-# 取前半部分 (0 到 pi) 进行绘制，这样更直观
-half_len = div(nfft, 2) + 1
-H_half = H[1:half_len]
-# 计算幅度 (dB)
-mag_H_db = 20 * log10.(abs.(H_half))
-
-# 频率轴 (0 到 pi)
-w_axis = range(0, pi, length=half_len)
-
-# 6. 绘图
-figure("High-pass Filter Design using Kaiser Window")
-
-# 子图1: 滤波器系数 h[n]
+# 子图 1: 冲激响应
 subplot(2, 1, 1)
-stem(n, h)
-title("FIR 高通滤波器单位脉冲响应 h[n] (N=$N)")
+stem(0:N, h, "b-o", label="h[n]")
+title("FIR 高通滤波器冲激响应 h[n] (N=$N)")
 xlabel("n")
 ylabel("幅度")
-grid("on")
+grid(true)
+legend()
 
-# 子图2: 增益响应 (dB)
+# 子图 2: 增益响应
 subplot(2, 1, 2)
-plot(w_axis ./ pi, mag_H_db)
-title("增益响应 (Gain Response) - [0, \\pi]")
-xlabel("归一化频率 (\\times \\pi rad/sample)")
-ylabel("幅度 (dB)")
-xlim([0, 1])     # 显示 0 到 1 (pi)
-ylim([-80, 10]) # 限制 Y 轴范围
-grid("on")
 
-# 添加指标辅助线
-# 阻带截止 (0.45) 和 通带截止 (0.55)
-# 阻带上限 (-A dB)
-plot([0, 0.45], [-A, -A], "--r", label="阻带指标") 
-# 通带下限 (这里近似画在 0dB 附近示意)
-plot([0.55, 1], [0, 0], "--g", label="通带指标")
+# 1. 先画指标辅助线 (放在底层)
+# 阻带/通带边界
+plot([ws/pi, ws/pi], [-100, 20], "k--", label="阻带/通带边界")
+plot([wp/pi, wp/pi], [-100, 20], "k--")
+# 最小衰减线
+plot([0, 1], [-A, -A], "k:", label="最小衰减指标")
+
+# 2. 画增益曲线 (红色实线)
+plot(freqs, gain_dB, "r", label="增益响应")
+
+title("增益响应 (dB)")
+xlabel("归一化频率 (ω / π)")
+ylabel("幅度 (dB)")
+xlim(0, 1)      # 只显示 0 到 pi
+ylim(-100, 10)  # Y 轴范围: 显示从 -100dB 到 10dB
+
+grid(true)
 legend()
 ```
 
@@ -2678,170 +2928,104 @@ grid("on")
 
 ```julia
 using LinearAlgebra
-using TyPlot  # 使用 Syslab 原生绘图库
 
-# =========================================================================
-#  第一部分：核心算法 (手动实现 residuez)
-# =========================================================================
-
-# 1. 求多项式根 (使用伴随矩阵法，数值稳定性高)
-function get_roots_robust(coeffs)
+# ========= 工具：求根（输入为“降幂”系数：c0*x^n + c1*x^(n-1)+...+cn）
+function roots_desc(coeffs::AbstractVector{<:Real})
     n = length(coeffs) - 1
-    # 归一化，防止首项不为1
-    if abs(coeffs[1]) < 1e-9; return ComplexF64[]; end
-    c = coeffs ./ coeffs[1]
-    
-    # 构建伴随矩阵
-    Cm = zeros(ComplexF64, n, n)
-    for i in 1:n-1; Cm[i+1, i] = 1.0; end
-    for i in 1:n; Cm[i, n] = -c[i+1]; end
-    
-    return eigvals(Cm)
+    @assert n >= 1
+    lead = coeffs[1]
+    @assert abs(lead) > 1e-12
+    c = coeffs ./ lead               # 归一化成首项为1
+
+    C = zeros(ComplexF64, n, n)
+    for i in 1:n-1
+        C[i+1, i] = 1.0
+    end
+    C[:, n] .= -c[2:end]
+    eigvals(C)
 end
 
-# 2. 部分分式展开 (Residuez)
-function my_residuez(b, a)
-    # 计算直接项 k (长除法首项)
-    k = 0.0
-    if length(b) == length(a); k = b[1] / a[1]; end
-    
-    # 计算极点 p
-    p = get_roots_robust(a)
-    
-    # 计算留数 r (使用留数定理导数法)
-    r = zeros(ComplexF64, length(p))
-    b_new = b .- k .* a # 去除直接项后的分子
-    
-    for i in 1:length(p)
-        pi = p[i]
-        # 分子值 Num(pi)
-        num_val = sum(b_new[j] * (pi ^ (-(j-1))) for j in 1:length(b_new))
-        # 分母导数值 Den'(pi) (等效于去除该极点后的连乘)
-        den_val = 1.0 + 0.0im
-        for j in 1:length(p)
-            if i != j; den_val *= (1 - p[j]/pi); end
-        end
-        r[i] = num_val / den_val
+# ========= 多项式求值（升幂：a0 + a1*q + ...）
+polyval_asc(a, q) = sum(a[i] * q^(i-1) for i in 1:length(a))
+
+# ========= 多项式导数（升幂系数 -> 升幂系数）
+function polyder_asc(a::AbstractVector{<:Real})
+    n = length(a) - 1
+    n == 0 && return [0.0]
+    d = zeros(Float64, n)
+    for i in 2:length(a)
+        d[i-1] = (i-1) * a[i]
     end
+    d
+end
+
+# ========= MATLAB residuez 等价实现：b,a 为 z^-1(=q) 的升幂系数 [b0,b1,...]
+# 返回 r,p,k，使 H(z)=k + Σ r_i/(1 - p_i z^-1)
+function residuez_like_matlab(b::Vector{Float64}, a::Vector{Float64})
+    nb = length(b)-1
+    na = length(a)-1
+    @assert na >= 1
+
+    # 这里只写够用版本：若 nb==na，则 k 为常数（最高次项比值）
+    # 你的题刚好 nb==na==5
+    @assert nb == na "如需处理 nb≠na，可再扩展做多项式长除法"
+    k = b[end] / a[end]                  # 注意：最高次项比值（不是 b[1]/a[1]）
+    b_rem = b .- k .* a                  # 余式（仍是升幂系数）
+
+    # q=z^-1 域极点：A(q)=0 的根
+    q_poles = roots_desc(reverse(a))     # reverse(a) 变成 q 的降幂系数
+    p = 1.0 ./ q_poles                   # z 域极点
+
+    # 留数：res_q = B_rem(q_i)/A'(q_i)，再换成 MATLAB 形式 r_i = -p_i * res_q
+    a_der = polyder_asc(a)
+    r = similar(p)
+    for i in eachindex(q_poles)
+        qi = q_poles[i]
+        res_q = polyval_asc(b_rem, qi) / polyval_asc(a_der, qi)
+        r[i] = -(p[i]) * res_q
+    end
+
+    # MATLAB 的 k 会把由换元产生的常数项也吸收进去；
+    # 对于 r/(1-p z^-1)=r + (r p)/(z-p)，常数项是 r，所以把 Σr 加到 k 里更接近 MATLAB 输出
+    k = k + sum(real.(r))  # 系统系数全实，最终 k 应为实数
     return r, p, k
 end
 
-# =========================================================================
-#  第二部分：主程序与结果输出
-# =========================================================================
-
-# 1. 输入题目给定的系数
-# H(z) 分子: 2 + 5z^-1 + 1z^-2 - 3z^-3 + 4z^-4 + 6z^-5
+# ========= 题目系数
 b = [2.0, 5.0, 1.0, -3.0, 4.0, 6.0]
-# H(z) 分母: 1 + 3z^-1 - 5z^-2 + 2z^-3 - 4z^-4 + 3z^-5
 a = [1.0, 3.0, -5.0, 2.0, -4.0, 3.0]
 
-println("正在进行 IIR 滤波器并联分解...\n")
-r, p, k = my_residuez(b, a)
+r, p, k = residuez_like_matlab(b, a)
 
-# 2. 打印计算结果 (作业答案)
-println("=======================================================")
-println("                分解结果 (可直接抄写)")
-println("=======================================================")
-
-# --- 输出并联结构 I 型 (复数形式) ---
-println("\n[1] 并联结构 I 型 (Complex Form):")
-println("    H(z) = k + Σ [ r_i / (1 - p_i z^-1) ]")
-println("-------------------------------------------------------")
-print("H(z) = ", round(real(k), digits=4))
-
-for i in 1:length(p)
-    # 格式化复数
-    r_re = round(real(r[i]), digits=4); r_im = round(imag(r[i]), digits=4)
-    r_str = abs(r_im)<1e-4 ? "$r_re" : "($r_re + $(r_im)j)"
-    
-    p_re = round(real(p[i]), digits=4); p_im = round(imag(p[i]), digits=4)
-    p_str = abs(p_im)<1e-4 ? "$p_re" : "($p_re + $(p_im)j)"
-    
-    println("")
-    print("       + [ $r_str ] / ( 1 - $p_str z^-1 )")
+println("Parallel Form I (complex):")
+println("k = ", k)
+for i in eachindex(p)
+    println("r[$i] = ", r[i], " , p[$i] = ", p[i])
 end
-println("")
 
-# --- 输出并联结构 II 型 (实数形式 - 二阶节合并) ---
-println("\n\n[2] 并联结构 II 型 (Real Form):")
-println("    说明: 将共轭复数极点合并为二阶节(SOS)，系数为实数")
-println("-------------------------------------------------------")
-print("H(z) = ", round(real(k), digits=4))
-
-handled = falses(length(p)) # 标记已处理的极点
-
-for i in 1:length(p)
-    if handled[i]; continue; end
-    
-    # 判定实数极点
-    if abs(imag(p[i])) < 1e-5
-        val_r = real(r[i]); val_p = real(p[i])
-        sign_p = val_p >= 0 ? "-" : "+" # 分母显示 1 - pz^-1
-        
-        println("")
-        print("       + ", round(val_r, digits=4))
-        print(" / ( 1 $sign_p ", round(abs(val_p), digits=4), " z^-1 )")
-        handled[i] = true
+println("\nParallel Form II (real SOS):")
+tol = 1e-6
+used = falses(length(p))
+for i in eachindex(p)
+    used[i] && continue
+    if abs(imag(p[i])) < tol
+        println("  section: ", real(r[i]), " / (1 - ", real(p[i]), " z^-1)")
+        used[i] = true
     else
-        # 寻找共轭对
-        for j in (i+1):length(p)
-            if !handled[j] && abs(real(p[i]) - real(p[j])) < 1e-5
-                # 合并公式
-                # 分子 b0 + b1*z^-1 = 2Re(r) - 2Re(r*p')z^-1
-                b0 = 2 * real(r[i])
-                b1 = -2 * real(r[i] * conj(p[i]))
-                
-                # 分母 1 + a1*z^-1 + a2*z^-2 = 1 - 2Re(p)z^-1 + |p|^2z^-2
-                a1 = -2 * real(p[i])
-                a2 = abs(p[i])^2
-                
-                # 格式化
-                b0_s = round(b0, digits=4)
-                b1_s = b1 >= 0 ? "+ $(round(b1,digits=4))" : "- $(round(abs(b1),digits=4))"
-                a1_s = a1 >= 0 ? "+ $(round(a1,digits=4))" : "- $(round(abs(a1),digits=4))"
-                a2_s = round(a2, digits=4)
-                
-                println("")
-                print("       + ( $b0_s $b1_s z^-1 )") 
-                print(" / ( 1 $a1_s z^-1 + $a2_s z^-2 )")
-                
-                handled[i] = true; handled[j] = true; break
-            end
-        end
+        # 找共轭
+        j = findfirst(j -> !used[j] && abs(p[j] - conj(p[i])) < 1e-5, eachindex(p))
+        @assert j !== nothing "未找到共轭极点，请检查 tol"
+        # 合并为二阶节（实系数）
+        b0 = 2*real(r[i])
+        b1 = -2*real(r[i]*conj(p[i]))
+        a1 = -2*real(p[i])
+        a2 = abs(p[i])^2
+        println("  section: (", b0, " + ", b1, " z^-1) / (1 + ", a1, " z^-1 + ", a2, " z^-2)")
+        used[i] = true
+        used[j] = true
     end
 end
-println("\n")
 
-# =========================================================================
-#  第三部分：绘图 (Pole-Zero Plot)
-# =========================================================================
-
-# 计算零点用于绘图
-zeros_val = get_roots_robust(b)
-
-figure("IIR Filter Analysis")
-
-# 1. 绘制单位圆
-theta = range(0, 2pi, length=200)
-plot(cos.(theta), sin.(theta), "k--", linewidth=1, label="Unit Circle")
-hold("on")
-
-# 2. 绘制零点 (Zeros) - 蓝色圆圈
-plot(real(zeros_val), imag(zeros_val), "bo", markersize=8, label="Zeros")
-
-# 3. 绘制极点 (Poles) - 红色叉号
-plot(real(p), imag(p), "rx", markersize=10, label="Poles")
-
-# 4. 图表修饰
-title("Pole-Zero Plot of IIR Filter")
-xlabel("Real Axis")
-ylabel("Imaginary Axis")
-grid("on")
-axis("equal") # 保证圆是圆的
-legend("on")
-
-hold("off")
 ```
 
 
@@ -3066,84 +3250,79 @@ println("   (因为滤波器是一个陷波器，滤除了 0.1 rad 的分量)")
 
 ```julia
 using LinearAlgebra
-using TyPlot  # 使用 Syslab 原生绘图库
+using TyPlot
 
-# ==========================================
-#  1. 基础函数：求多项式根
-# ==========================================
-function get_roots_robust(coeffs)
-    # 输入系数向量 [a0, a1, ..., an] 对应 a0 + a1*z^-1 + ...
+# coeffs = [a0, a1, ..., an] 表示 a0 + a1*x + ... + an*x^n
+function poly_roots(coeffs::AbstractVector{<:Real})
     n = length(coeffs) - 1
-    if abs(coeffs[1]) < 1e-9; return ComplexF64[]; end
-    
-    # 归一化系数
-    c = coeffs ./ coeffs[1]
-    
-    # 构建伴随矩阵 (Companion Matrix)
-    # 特征值即为多项式的根
-    Cm = zeros(ComplexF64, n, n)
-    for i in 1:n-1; Cm[i+1, i] = 1.0; end
-    for i in 1:n; Cm[i, n] = -c[i+1]; end
-    
-    return eigvals(Cm)
+    @assert n >= 1 "多项式阶数必须≥1"
+    an = coeffs[end]
+    @assert abs(an) > 1e-12 "最高次系数不能为0"
+
+    c = reverse(coeffs) ./ an  # [1, a_{n-1}/an, ..., a0/an]
+
+    C = zeros(ComplexF64, n, n)
+    C[1, :] .= -c[2:end]
+    for i in 2:n
+        C[i, i-1] = 1.0
+    end
+    eigvals(C)
 end
 
-# ==========================================
-#  2. 定义系统参数
-# ==========================================
+# ---------------------------
+# 题目：H(z)=B(z^-1)/A(z^-1)
+# 乘 z^4 得到 z 平面多项式：
+# Bz(z)=z^4 -0.2 z^3 +0.5 z^2 +2 z -0.6
+# Az(z)=z^4 +3.2 z^3 +1.5 z^2 -0.8 z +1.4
+# ---------------------------
 
-# 分子系数 (Numerator)
-# 1 - 0.2z^-1 + 0.5z^-2 + 2z^-3 - 0.6z^-4
-b = [1.0, -0.2, 0.5, 2.0, -0.6]
+# 注意：poly_roots 需要的是“升幂”系数 [常数项, z^1, z^2, ... , z^4]
+Bz = [-0.6,  2.0, 0.5, -0.2, 1.0]
+Az = [ 1.4, -0.8, 1.5,  3.2, 1.0]
 
-# 分母系数 (Denominator)
-# 1 + 3.2z^-1 + 1.5z^-2 - 0.8z^-3 + 1.4z^-4
-a = [1.0, 3.2, 1.5, -0.8, 1.4]
+zzeros = poly_roots(Bz)
+zpoles = poly_roots(Az)
 
-# ==========================================
-#  3. 计算零点与极点
-# ==========================================
+println("Zeros (z-plane) = ", round.(zzeros, digits=4))
+println("Poles (z-plane) = ", round.(zpoles, digits=4))
 
-zeros_val = get_roots_robust(b) # 分子根 -> 零点
-poles_val = get_roots_robust(a) # 分母根 -> 极点
+# ===== 绘图：不使用 hold，一次 plot 叠加三组数据 =====
+theta = range(0, 2π, length=400)
+ucx, ucy = cos.(theta), sin.(theta)
 
-println("计算完成。")
-println("零点 (Zeros): ", round.(zeros_val, digits=4))
-println("极点 (Poles): ", round.(poles_val, digits=4))
+# 为了让零点/极点“只有标记不连线”，用 NaN 打断折线
+function nansep(v::AbstractVector{<:Real})
+    out = Vector{Float64}(undef, 2length(v))
+    out[1:2:end] .= v
+    out[2:2:end] .= NaN
+    out
+end
 
-# ==========================================
-#  4. 绘制零极点分布图
-# ==========================================
+zx = nansep(real.(zzeros)); zy = nansep(imag.(zzeros))
+px = nansep(real.(zpoles)); py = nansep(imag.(zpoles))
 
 figure("Question 34: Pole-Zero Plot")
-hold("on")
 
-# (1) 绘制单位圆 (Unit Circle) - 参考线
-theta = range(0, 2pi, length=200)
-plot(cos.(theta), sin.(theta), "k--", linewidth=1, label="Unit Circle")
+# 一次画三组：单位圆(k--)、零点(bo)、极点(rx)
+plot(ucx, ucy, "k--",
+     zx,  zy,  "bo",
+     px,  py,  "rx",
+     linewidth=1, markersize=9)
 
-# (2) 绘制零点 (Zeros) - 蓝色圆圈 'o'
-plot(real(zeros_val), imag(zeros_val), "bo", markersize=8, label="Zeros")
-
-# (3) 绘制极点 (Poles) - 红色叉号 'x'
-plot(real(poles_val), imag(poles_val), "rx", markersize=10, label="Poles")
-
-# (4) 图表设置
 title("Pole-Zero Plot of the System")
 xlabel("Real Axis")
 ylabel("Imaginary Axis")
 grid("on")
-legend("on")
+axis("equal")
 
-# 【关键】设置坐标轴比例相等，确保圆画出来是圆的
-axis("equal") 
+# 范围
+vals = vcat(real.(zzeros), imag.(zzeros), real.(zpoles), imag.(zpoles), [-1.0, 1.0])
+m = maximum(abs.(vals)) + 0.5
+xlim([-m, m]); ylim([-m, m])
 
-# 如果极点范围很大，适当调整显示范围以便看清
-max_val = maximum(abs.([real(poles_val); imag(poles_val); 1.5])) + 0.5
-xlim([-max_val, max_val])
-ylim([-max_val, max_val])
+# 图例（如果这一行不兼容，就删掉）
+legend(["Unit Circle", "Zeros", "Poles"])
 
-hold("off")
 ```
 
 ## 35.已知全通系统的系统函数为: $H(z)=\frac{3-4z^{-1}+2z^{-2}-5z^{-3}+3z^{-4}+z^{-5}}{1+3z^{-1}-5z^{-2}+2z^{-3}-4z^{-4}+3z^{-5}}$ 。用 MATLAB 求全通系统进行级联格型结构的乘法器系数。
@@ -3234,71 +3413,61 @@ println("验证: k[5] 是否等于 a[5]? -> ", isapprox(k_coeffs[end], a_coeffs[
 ## 36.已知有限长序列为: $x[n]=\sin(25\pi n/64), 0\le n\le63$, 求该序列的 64 点离散傅立叶变换 X[k], 绘制出 X[k] 的幅度。
 
 ```julia
-using TyPlot       # Syslab 原生绘图
+using TyPlot
 using LinearAlgebra
 
-# ==========================================
-#  1. 定义 DFT 计算函数 (防止缺少 FFTW 包)
-# ==========================================
+# DFT（沿用你文件里的实现）
 function my_dft(x)
     N = length(x)
     X = zeros(ComplexF64, N)
-    # DFT 公式: X[k] = sum_{n=0}^{N-1} x[n] * exp(-j*2*pi*k*n/N)
     for k in 0:N-1
-        sum_val = 0.0 + 0.0im
+        s = 0.0 + 0.0im
         for n in 0:N-1
-            # 注意：Julia 数组索引从 1 开始，所以取 x[n+1]
-            angle = -2 * pi * k * n / N
-            sum_val += x[n+1] * exp(im * angle)
+            s += x[n+1] * exp(-2im*pi*k*n/N)
         end
-        X[k+1] = sum_val
+        X[k+1] = s
     end
-    return X
+    X
 end
 
-# ==========================================
-#  2. 生成信号与计算
-# ==========================================
 N = 64
-n = 0:N-1
+n = collect(0:N-1)
+x = sin.(25*pi*n/64)
 
-# 生成序列 x[n] = sin(25*pi*n / 64)
-x = sin.(25 * pi * n / 64)
+Xk = my_dft(x)
 
-println("正在计算 64 点 DFT...")
-X_k = my_dft(x)
+# 幅度（不调用 abs）：|X| = sqrt(Re^2 + Im^2)
+mag = sqrt.(real.(Xk).^2 .+ imag.(Xk).^2)
 
-# 计算幅度谱 |X[k]|
-mag_X = abs.(X_k)
+k = collect(0:N-1)
 
-# ==========================================
-#  3. 绘图
-# ==========================================
-figure("Question 36: DFT Magnitude")
+figure("Q36: 64-point DFT of x[n]")
 
-# 使用 stem 图 (火柴梗图) 展示离散频谱
-# 也就是画出每一根谱线的高度
-k_axis = 0:N-1
-stem(k_axis, mag_X, "b-", filled=true, markersize=4, label="|X[k]|")
-
-# 图表修饰
-title("Magnitude of 64-point DFT: |X[k]|")
-xlabel("Frequency Index k")
-ylabel("Magnitude")
+subplot(3,1,1)
+stem(k, real.(Xk), "b-", filled=true, markersize=4)
+title("Re{X[k]}")
+xlabel("k"); ylabel("Real")
 grid("on")
 
-# 标记出峰值位置的辅助线 (k=12.5 处)
-# 理论中心在 12.5 和 64-12.5=51.5
-hold("on")
-plot([12.5, 12.5], [0, maximum(mag_X)], "r--", linewidth=1, label="True Freq (k=12.5)")
-plot([51.5, 51.5], [0, maximum(mag_X)], "r--", linewidth=1)
-legend("on")
+subplot(3,1,2)
+stem(k, imag.(Xk), "b-", filled=true, markersize=4)
+title("Im{X[k]}")
+xlabel("k"); ylabel("Imag")
+grid("on")
 
+subplot(3,1,3)
+stem(k, mag, "b-", filled=true, markersize=4)
+title("Magnitude |X[k]|  (computed by sqrt(Re^2+Im^2))")
+xlabel("k"); ylabel("Magnitude")
+grid("on")
+
+# 标记真实“半个谱线”的位置：k0=12.5 和 N-k0=51.5
+hold("on")
+plot([12.5, 12.5], [0, maximum(mag)], "r--", linewidth=1, label="k=12.5")
+plot([51.5, 51.5], [0, maximum(mag)], "r--", linewidth=1, label="k=51.5")
+legend("on")
 hold("off")
 
-println("计算完成。")
-println("观察图形：由于频率 k=12.5 不是整数，")
-println("频谱能量并未集中在单根谱线上，而是分散在 k=12 和 k=13 周围。")
 ```
 
 

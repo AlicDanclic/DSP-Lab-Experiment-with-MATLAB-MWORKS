@@ -1,65 +1,54 @@
-using TyPlot       # Syslab 原生绘图
+using TyPlot
 using LinearAlgebra
 
-# ==========================================
-#  1. 定义 DFT 计算函数 (防止缺少 FFTW 包)
-# ==========================================
+# DFT（沿用你文件里的实现）
 function my_dft(x)
     N = length(x)
     X = zeros(ComplexF64, N)
-    # DFT 公式: X[k] = sum_{n=0}^{N-1} x[n] * exp(-j*2*pi*k*n/N)
     for k in 0:N-1
-        sum_val = 0.0 + 0.0im
+        s = 0.0 + 0.0im
         for n in 0:N-1
-            # 注意：Julia 数组索引从 1 开始，所以取 x[n+1]
-            angle = -2 * pi * k * n / N
-            sum_val += x[n+1] * exp(im * angle)
+            s += x[n+1] * exp(-2im*pi*k*n/N)
         end
-        X[k+1] = sum_val
+        X[k+1] = s
     end
-    return X
+    X
 end
 
-# ==========================================
-#  2. 生成信号与计算
-# ==========================================
 N = 64
-n = 0:N-1
+n = collect(0:N-1)
+x = sin.(25*pi*n/64)
 
-# 生成序列 x[n] = sin(25*pi*n / 64)
-x = sin.(25 * pi * n / 64)
+Xk = my_dft(x)
 
-println("正在计算 64 点 DFT...")
-X_k = my_dft(x)
+# 幅度（不调用 abs）：|X| = sqrt(Re^2 + Im^2)
+mag = sqrt.(real.(Xk).^2 .+ imag.(Xk).^2)
 
-# 计算幅度谱 |X[k]|
-mag_X = abs.(X_k)
+k = collect(0:N-1)
 
-# ==========================================
-#  3. 绘图
-# ==========================================
-figure("Question 36: DFT Magnitude")
+figure("Q36: 64-point DFT of x[n]")
 
-# 使用 stem 图 (火柴梗图) 展示离散频谱
-# 也就是画出每一根谱线的高度
-k_axis = 0:N-1
-stem(k_axis, mag_X, "b-", filled=true, markersize=4, label="|X[k]|")
-
-# 图表修饰
-title("Magnitude of 64-point DFT: |X[k]|")
-xlabel("Frequency Index k")
-ylabel("Magnitude")
+subplot(3,1,1)
+stem(k, real.(Xk), "b-", filled=true, markersize=4)
+title("Re{X[k]}")
+xlabel("k"); ylabel("Real")
 grid("on")
 
-# 标记出峰值位置的辅助线 (k=12.5 处)
-# 理论中心在 12.5 和 64-12.5=51.5
+subplot(3,1,2)
+stem(k, imag.(Xk), "b-", filled=true, markersize=4)
+title("Im{X[k]}")
+xlabel("k"); ylabel("Imag")
+grid("on")
+
+subplot(3,1,3)
+stem(k, mag, "b-", filled=true, markersize=4)
+title("Magnitude |X[k]|  (computed by sqrt(Re^2+Im^2))")
+xlabel("k"); ylabel("Magnitude")
+grid("on")
+
+# 标记真实“半个谱线”的位置：k0=12.5 和 N-k0=51.5
 hold("on")
-plot([12.5, 12.5], [0, maximum(mag_X)], "r--", linewidth=1, label="True Freq (k=12.5)")
-plot([51.5, 51.5], [0, maximum(mag_X)], "r--", linewidth=1)
+plot([12.5, 12.5], [0, maximum(mag)], "r--", linewidth=1, label="k=12.5")
+plot([51.5, 51.5], [0, maximum(mag)], "r--", linewidth=1, label="k=51.5")
 legend("on")
-
 hold("off")
-
-println("计算完成。")
-println("观察图形：由于频率 k=12.5 不是整数，")
-println("频谱能量并未集中在单根谱线上，而是分散在 k=12 和 k=13 周围。")

@@ -54,17 +54,24 @@ println("估算滤波器长度 N: $N")
 println("估算滤波器阶数 M (N-1): $Order")
 println("----------------------------------------")
 
-# 6. (可选) 绘制规格示意图
-# 这是一个简单的图示，用于直观展示通带和阻带的位置
+# 6. 绘制规格示意图（更标准的阶梯/边界显示）
 figure("Filter Specifications")
-# 绘制理想的幅频特性轮廓
-# 修改变量名 freqs 为 freq_specs 以避免与 DSP.freqs 冲突
-freq_specs = [0, fp, fs, Fs/2]
-amps = [1, 1, 0, 0]
-plot(freq_specs, amps, "r--")
+
+# 一次 plot 画多段线（不使用 hold，避免版本差异）
+plot([0, fp],      [1, 1], "r--",      # 通带
+     [fp, fs],     [1, 0], "r--",      # 过渡带（示意）
+     [fs, Fs/2],   [0, 0], "r--",      # 阻带
+     [fp, fp],     [0, 1], "k:",       # fp 竖线
+     [fs, fs],     [0, 1], "k:")       # fs 竖线
+
 title("FIR 低通滤波器设计规格")
 xlabel("频率 (Hz)")
 ylabel("理想幅度")
-text(fp, 1.05, "fp=1500")
-text(fs, 0.1, "fs=1800")
-grid(true)
+grid("on")
+axis("tight")
+xlim([0, Fs/2])
+ylim([-0.1, 1.1])
+
+# 标注位置下移，避免挡标题
+text(fp, 0.92, "fp=1500 Hz")
+text(fs, 0.08, "fs=1800 Hz")

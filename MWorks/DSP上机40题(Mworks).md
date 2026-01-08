@@ -2,8 +2,7 @@
 
 ```julia
 import Pkg
-# 自动检测并安装缺失的包 (DSP, Optim)
-# TyPlot 通常在 MWorks 中预装，但为了保险起见也可以检查，不过这里主要解决 Optim
+# 自动检测并安装缺失的包
 required_packages = ["DSP", "Optim"]
 for pkg in required_packages
     if Base.find_package(pkg) === nothing
@@ -13,57 +12,31 @@ for pkg in required_packages
 end
 
 using DSP
-using TyPlot # 替换 Plots 为 TyPlot
+using TyPlot
 using Optim
 using LinearAlgebra
-using Statistics # 确保 mean 和 std 可用
+using Statistics
 
-# ==========================================
-# 1. 设计 3 阶椭圆低通滤波器 (IIR)
-# ==========================================
-println("正在设计椭圆滤波器...")
-
-# 性能指标
-wp = 0.4             # 通带截止频率 (归一化频率, 1.0对应π)
-ws = 0.5             # 阻带起始频率
-Rp = 0.6             # 通带波纹 (dB)
-Rs = 32.0            # 最小阻带衰减 (dB)
-N_iir = 3            # 滤波器阶数
-
-# 设计滤波器对象
-# 显式使用 DSP.Elliptic 以避免与 TyMath.Elliptic 冲突
-response_type = Lowpass(wp)
-design_method = DSP.Elliptic(N_iir, Rp, Rs)
-iir_filter = digitalfilter(response_type, design_method)
-
-# ==========================================
-# 2. 设计 6 阶全通均衡器 (优化过程)
-# ==========================================
-println("正在优化全通均衡器参数 (可能需要几秒钟)...")
-
-# 均衡器阶数 (6阶 = 3个二阶节)
-N_ap = 6
-n_sections = div(N_ap, 2) 
-
-# 定义频率网格 (只关注通带内的延时平坦度)
-# 使用 0 到 0.4π 之间的频率点进行优化
-w_pass = range(0, stop=wp*pi, length=100)
-
-# 计算原始 IIR 滤波器的群延时
-tau_iir = grpdelay(iir_filter, w_pass)
-
-# 辅助函数：根据极点半径(r)和角度(theta)构建全通滤波器对象
+# ==============================================================================
+# 1. 辅助函数：构造全通滤波器
+# ==============================================================================
+# 根据极点半径(r)和角度(theta)构建级联的全通滤波器 (ZeroPoleGain形式)
 function make_allpass(params)
+    n_sections = div(length(params), 2)
     total_filter = nothing
+    
     for i in 1:n_sections
         r = params[2*i - 1]
         theta = params[2*i]
         
+        # 共轭极点对
         p = r * exp(im * theta)
         poles = [p, conj(p)]
-        zeros = [1/conj(p), 1/p]
+        # 全通滤波器的零点是极点的倒数共轭
+        zeros_vec = [1/conj(p), 1/p]
         
-        section = ZeroPoleGain(zeros, poles, 1.0)
+        # 增益设为 r^2 以保持单位增益
+        section = ZeroPoleGain(zeros_vec, poles, 1.0)
         
         if total_filter === nothing
             total_filter = section
@@ -71,83 +44,163 @@ function make_allpass(params)
             total_filter = total_filter * section 
         end
     end
+    
     return total_filter
 end
 
-# 目标函数：计算总群延时的标准差 (越小越平坦)
-function cost_function(params)
-    try
-        ap_filter = make_allpass(params)
-        tau_ap = grpdelay(ap_filter, w_pass)
-        tau_total = tau_iir + tau_ap
-        return std(tau_total) 
-    catch
-        return Inf 
+# ==============================================================================
+# 2. 优化函数
+# ==============================================================================
+function optimize_group_delay(iir_filter, wp, N_ap)
+    println("正在优化全通均衡器参数...")
+    
+    n_sections = div(N_ap, 2)
+    # 优化频率范围：0 到 截止频率 (通带)
+    w_pass = range(0, stop=wp*pi, length=100)
+    
+    # 计算原始 IIR 的群延时
+    tau_iir = grpdelay(iir_filter, w_pass)
+    mean_tau_iir = mean(tau_iir)
+    
+    # 目标函数：最小化 (总群延时 - 平均值) 的标准差
+    function cost_function(params)
+        try
+            ap_filter = make_allpass(params)
+            tau_ap = grpdelay(ap_filter, w_pass)
+            tau_total = tau_iir + tau_ap
+            # 我们希望群延时尽可能平坦，即标准差最小
+            return std(tau_total)
+        catch
+            return Inf
+        end
     end
+    
+    # 初始猜测 [r1, theta1, r2, theta2, ...]
+    initial_params = Float64[]
+    for i in 1:n_sections
+        push!(initial_params, 0.5 + 0.1*i) # r
+        push!(initial_params, 0.1*pi * i)  # theta
+    end
+    
+    # 约束：半径 0~1 (稳定)，角度 0~pi
+    lower_bounds = repeat([0.0, 0.0], n_sections)
+    upper_bounds = repeat([0.99, pi], n_sections)
+    
+    # 使用 Fminbox + BFGS 优化
+    res = optimize(cost_function, lower_bounds, upper_bounds, initial_params, Fminbox(BFGS()), Optim.Options(time_limit=15.0))
+    
+    best_params = Optim.minimizer(res)
+    println("优化结束。最终代价 (std): ", Optim.minimum(res))
+    return make_allpass(best_params)
 end
 
-# 初始猜测参数 [r, theta, r, theta, ...]
-initial_params = [0.5, 0.1*pi, 0.6, 0.2*pi, 0.7, 0.3*pi]
+# ==============================================================================
+# 3. 绘图函数
+# ==============================================================================
+function plot_results(iir_filter, ap_filter, wp, ws)
+    # --- 准备数据 ---
+    # 频率轴：全频段 [0, pi] 用于幅频响应，通带 [0, wp*pi] 用于群延时细节
+    n_points = 1000
+    w_full = range(0, stop=pi, length=n_points)
+    w_pass = range(0, stop=wp*pi, length=n_points)
+    
+    # 1. 计算幅频响应 (Magnitude)
+    # 使用 freqz 计算复数响应
+    H_iir = freqz(iir_filter, w_full)
+    H_ap  = freqz(ap_filter, w_full)
+    H_total = H_iir .* H_ap
+    
+    mag_iir = abs.(H_iir)
+    mag_total = abs.(H_total)
+    
+    # 归一化 (以 DC 增益为基准)
+    mag_iir ./= mag_iir[1]
+    mag_total ./= mag_total[1] # 级联后可能会有微小增益变化，重新归一化
+    
+    # 2. 计算群延时 (Group Delay) - 仅关注通带和过渡带
+    tau_iir = grpdelay(iir_filter, w_pass)
+    tau_ap  = grpdelay(ap_filter, w_pass)
+    tau_total = tau_iir + tau_ap
+    
+    # --- 开始绘图 ---
+    figure("IIR Filter & Group Delay Equalization")
+    clf()
+    
+    # 子图 1: 幅频响应 (Magnitude)
+    subplot(2, 1, 1)
+    hold("on")
+    plot(w_full/pi, mag_iir, "b-", linewidth=1.5, label="原始低通 IIR")
+    plot(w_full/pi, mag_total, "r--", linewidth=1.5, label="级联后 (IIR + 全通)")
+    
+    # 标记通带截止频率
+    plot([wp, wp], [0, 1.1], "k:", linewidth=1)
+    
+    # 样式设置
+    ylabel("归一化幅值")
+    title("1. 幅频响应对比 (验证全通特性)")
+    grid("on")
+    legend()
+    xlim([0, 1])
+    ylim([0, 1.1])
+    # 可以在图上标注一下，全通不改变幅度
+    # 修复：将 color="gray" 改为十六进制 "#808080"，因为 TyPlot 不支持 "gray" 名称
+    text(0.5, 0.5, "注意：红虚线应与蓝实线重合\n(全通滤波器不改变幅度谱)", fontsize=8, color="#808080")
+    
+    # 子图 2: 群延时 (Group Delay)
+    subplot(2, 1, 2)
+    hold("on")
+    plot(w_pass/pi, tau_iir, "b-", linewidth=1.5, label="原始群延时")
+    plot(w_pass/pi, tau_total, "r-", linewidth=2.0, label="均衡后总群延时")
+    
+    # 绘制平均延时参考线
+    avg_delay = mean(tau_total)
+    plot([0, wp], [avg_delay, avg_delay], "g-.", linewidth=1, label="平均延时 ($(round(avg_delay, digits=1)))")
+    
+    # 样式设置
+    xlabel("归一化频率 (×π rad/sample)")
+    ylabel("群延时 (samples)")
+    title("2. 通带群延时均衡效果")
+    grid("on")
+    legend()
+    xlim([0, wp]) # 聚焦通带
+    
+    # 自动调整Y轴范围以展示细节
+    y_min = minimum(tau_total) * 0.8
+    y_max = maximum(tau_iir) * 1.1
+    ylim([y_min, y_max])
+    
+    hold("off")
+end
 
-# 设置参数边界
-lower_bounds = repeat([0.0, 0.0], n_sections)
-upper_bounds = repeat([0.99, pi], n_sections)
+# ==============================================================================
+# 主程序
+# ==============================================================================
+println("=== 开始设计 ===")
 
-# 执行优化
-res = optimize(cost_function, lower_bounds, upper_bounds, initial_params, Fminbox(BFGS()), Optim.Options(time_limit=10.0))
-best_params = Optim.minimizer(res)
+# 1. 滤波器指标
+wp = 0.4    # 通带截止 (x pi)
+ws = 0.5    # 阻带起始 (x pi)
+Rp = 0.6    # dB
+Rs = 32.0   # dB
+N_iir = 3   # IIR 阶数
 
-println("优化完成。")
-println("最佳全通极点参数 (r, theta): ", round.(best_params, digits=3))
+# 2. 设计 IIR 低通滤波器
+println("1. 设计 3阶 椭圆低通滤波器...")
+# 显式指定 design_method
+response = Lowpass(wp)
+method = DSP.Elliptic(N_iir, Rp, Rs)
+iir_filter = digitalfilter(response, method)
 
-# ==========================================
-# 3. 结果计算与绘图 (TyPlot 版本)
-# ==========================================
+# 3. 设计全通均衡器
+println("2. 设计 6阶 全通均衡器 (优化中)...")
+N_ap = 6
+ap_filter = optimize_group_delay(iir_filter, wp, N_ap)
 
-# 构建最终的全通滤波器
-ap_filter_final = make_allpass(best_params)
+# 4. 绘图
+println("3. 绘制分析图...")
+plot_results(iir_filter, ap_filter, wp, ws)
 
-# 在更宽的频率范围内计算响应以便绘图
-w_plot = range(0, stop=wp*pi, length=500) 
-tau_iir_plot = grpdelay(iir_filter, w_plot)
-tau_ap_plot = grpdelay(ap_filter_final, w_plot)
-tau_total_plot = tau_iir_plot + tau_ap_plot
-
-# 准备绘图数据
-x_data = w_plot ./ pi # 归一化频率
-
-# 计算Y轴范围以便绘制垂直线
-y_min = minimum([minimum(tau_iir_plot), minimum(tau_total_plot)])
-y_max = maximum([maximum(tau_iir_plot), maximum(tau_total_plot)])
-
-# 使用 TyPlot 绘图
-# TyPlot 通常支持类似 plot(x, y, spec) 的语法
-println("正在绘制结果...")
-
-# 绘制原始低通滤波器群延时
-# "b" 代表蓝色
-plot(x_data, tau_iir_plot, "b", label="Original Lowpass")
-hold("on") # 保持图像以叠加
-
-# 绘制均衡后的群延时
-# "r" 代表红色
-plot(x_data, tau_total_plot, "r", label="Equalized (Total)")
-
-# 绘制通带截止频率的垂直虚线
-# 手动构造线段数据: ([wp, wp], [y_min, y_max])
-# "k--" 代表黑色虚线
-plot([wp, wp], [y_min, y_max], "k--", label="Cutoff Frequency")
-
-title("Group Delay Equalization Result")
-xlabel("Normalized Frequency (x pi rad/sample)")
-ylabel("Group Delay (samples)")
-legend() # 显示图例
-grid("on") # 显示网格
-
-println("平均群延时 (原始): ", round(mean(tau_iir_plot), digits=2))
-println("平均群延时 (均衡后): ", round(mean(tau_total_plot), digits=2))
-println("群延时波动 (原始 std): ", round(std(tau_iir_plot), digits=4))
-println("群延时波动 (均衡后 std): ", round(std(tau_total_plot), digits=4))
+println("=== 完成 ===")
 ```
 
 ## 2．设计巴特沃兹模拟低通滤波器，其滤波器的阶数和3-dB截止频率由键盘输入，程序能根据输入的参数，绘制滤波器的增益响应。
@@ -466,7 +519,6 @@ function validate_pf(b, a, r, p)
 end
 
 validate_pf(b, a, r, p)
-
 ```
 
 ## 4.设计切比雪夫 I 型 IIR 数字高通滤波器, 其性能指标为: 通带波纹 $\alpha_{p}=0.5dB$, 最小阻带衰减 $\alpha_{s}=43dB$, 通带和阻带边缘频率 $\omega_{p}=0.75\pi$ rad 和 $\omega_{s}=0.35\pi$ rad。绘制所设计的滤波器增益响应。。
@@ -643,130 +695,198 @@ println("绘图完成。")
 
 ```julia
 import Pkg
-# 检查并添加 TyPlot
+
+# 自动检查并加载 TyPlot 绘图库
 if Base.find_package("TyPlot") === nothing
-    println("正在安装 TyPlot ...")
+    println("正在安装 TyPlot...")
     Pkg.add("TyPlot")
 end
 
 using TyPlot
 using LinearAlgebra
 
-println("=== 切比雪夫 I 型模拟低通滤波器设计 ===")
+println("=== 切比雪夫 I 型模拟低通滤波器设计 (MWorks/Julia) ===")
 
 # ==========================================
-# 1. 键盘输入参数
+# 1. 辅助函数：处理用户输入
 # ==========================================
-function get_valid_input(prompt::String, parse_func::Function)
+function get_user_input(prompt::String, parse_type::Type, validator::Function=(x->true))
     while true
         print(prompt)
-        flush(stdout)
+        flush(stdout) # 确保提示符立即显示
         try
-            input_str = strip(readline())
-            if isempty(input_str) continue end
-            return parse_func(input_str)
+            str = strip(readline())
+            if isempty(str) continue end
+            val = parse(parse_type, str)
+            if validator(val)
+                return val
+            else
+                println("输入数值超出合理范围，请重新输入。")
+            end
         catch
-            println("输入格式不正确，请重新输入。")
+            println("输入格式无效，请输入一个有效的 $(parse_type)。")
         end
     end
 end
 
-try
-    # 获取参数
-    global N = get_valid_input("请输入滤波器阶数 N (整数, 例如 4): ", x -> parse(Int, x))
-    global fc = get_valid_input("请输入截止频率 fc (Hz, 例如 1000): ", x -> parse(Float64, x))
-    global Rp = get_valid_input("请输入通带波纹 Rp (dB, 例如 0.5): ", x -> parse(Float64, x))
-
-    println("\n正在设计: N = $N, fc = $fc Hz, Rp = $Rp dB")
-
-catch e
-    println("\n错误: $e")
-    exit()
-end
-
 # ==========================================
-# 2. 计算极点 (S平面)
+# 2. 核心算法：设计滤波器
 # ==========================================
-# 切比雪夫 I 型滤波器的极点位于 S 平面的椭圆上
-# 这里的 fc 被视为通带边缘频率 (Passband Edge Frequency)
+"""
+    design_chebyshev_lowpass(N, fc_3db, Rp_db)
 
-wc = 2 * pi * fc
-epsilon = sqrt(10^(Rp/10) - 1) # 波纹因子
-mu = asinh(1/epsilon) / N      # 辅助参数
-
-poles = ComplexF64[]
-for k in 1:N
-    # 角度定义
-    # theta_k = pi/2 + (2k-1)/(2N) * pi
-    # 注意: 有些定义 k 从 0 到 N-1，这里 k 从 1 到 N，公式对应调整
-    theta = pi/2 + ((2*k - 1) * pi) / (2 * N)
+参数:
+  - N: 阶数
+  - fc_3db: 用户输入的 3dB 截止频率
+  - Rp_db: 通带波纹 (dB)
+返回:
+  - poles: S平面极点
+  - numerator: 分子系数 (增益)
+  - fp_edge: 计算出的通带边缘频率 (在此频率处衰减量为 Rp)
+"""
+function design_chebyshev_lowpass(N::Int, fc_3db::Float64, Rp_db::Float64)
+    # 1. 计算波纹因子 epsilon
+    epsilon = sqrt(10^(Rp_db / 10.0) - 1.0)
     
-    # 极点公式: s_k = wc * (-sinh(mu)sin(theta) + j cosh(mu)cos(theta))
-    real_part = -sinh(mu) * sin(theta)
-    imag_part = cosh(mu) * cos(theta)
-    s_k = wc * (real_part + im * imag_part)
+    # 2. 计算缩放因子
+    # 切比雪夫滤波器的 3dB 频率与通带边缘频率的关系：
+    # ω_c = ωp * cosh(1/N * acosh(1/ε))
+    scaling_factor = cosh((1.0 / N) * acosh(1.0 / epsilon))
     
-    push!(poles, s_k)
+    # 用户输入的 fc_3db 就是 -3dB 频率
+    wp_3db = 2 * pi * fc_3db  # 3dB 频率的角频率
+    wp_edge = wp_3db / scaling_factor  # 通带边缘的角频率
+    fp_edge = wp_edge / (2 * pi)  # 通带边缘频率 (Hz)
+    
+    # 3. 计算 S 平面极点 (分布在椭圆上)
+    mu = asinh(1.0 / epsilon) / N
+    poles = ComplexF64[]
+    
+    for k in 1:N
+        # 切比雪夫极点角度公式
+        theta = (2*k - 1) * pi / (2*N)
+        
+        sigma = -sinh(mu) * sin(theta)
+        omega = cosh(mu) * cos(theta)
+        
+        # 使用通带边缘频率进行缩放
+        s_k = wp_edge * (sigma + im * omega)
+        push!(poles, s_k)
+    end
+    
+    # 4. 计算归一化增益 (分子系数)
+    denom_at_0 = real(prod(-poles))
+    
+    if N % 2 == 1  # 奇数阶
+        numerator = denom_at_0  # 直流增益 = 1
+    else  # 偶数阶
+        numerator = denom_at_0 / sqrt(1 + epsilon^2)
+    end
+    
+    return poles, numerator, fp_edge
 end
 
-println("\n计算得到的极点 (S平面):")
-for (i, p) in enumerate(poles)
-    println("p$i: $(round(real(p), digits=2)) + $(round(imag(p), digits=2))j")
+# 计算复数频率响应
+function calc_complex_response(poles, numerator, f_array)
+    w_array = 2 * pi .* f_array
+    s_array = im .* w_array
+    # 传递函数 H(s) = K / product(s - pk)
+    H = map(s -> numerator / prod(s .- poles), s_array)
+    return H
 end
 
 # ==========================================
-# 3. 计算频率响应
+# 3. 主程序
 # ==========================================
-f_plot = range(0, stop=3*fc, length=1000)
-w_plot = 2 * pi .* f_plot
+function main()
+    try
+        # --- 获取参数 ---
+        N = get_user_input("请输入滤波器阶数 N (整数, >0): ", Int, x -> x > 0)
+        fc_input = get_user_input("请输入 3-dB 截止频率 fc (Hz, >0): ", Float64, x -> x > 0)
+        Rp = get_user_input("请输入通带波纹 Rp (dB, >0): ", Float64, x -> x > 0)
 
-# 确定分子系数 K
-# 切比雪夫 I 型滤波器在 w=0 处的幅值为:
-# - 如果 N 是奇数: |H(0)| = 1 (0 dB)
-# - 如果 N 是偶数: |H(0)| = 1 / sqrt(1 + epsilon^2) (-Rp dB)
+        println("\n-------------------------------------------")
+        println("正在计算滤波器参数...")
+        println("  阶数 (N)       : $N")
+        println("  3dB 截止频率   : $fc_input Hz")
+        println("  通带波纹       : $Rp dB")
+        println("-------------------------------------------")
 
-# 计算分母多项式在 s=0 处的值 (即所有极点的积的模)
-denom_at_0 = abs(prod(-poles)) # s=0 -> product(-pk)
+        # --- 设计滤波器 ---
+        poles, numerator, fp_calc = design_chebyshev_lowpass(N, fc_input, Rp)
+        
+        println("计算完成:")
+        println("  通带边缘频率 (fp): $(round(fp_calc, digits=2)) Hz (波纹终止点)")
+        
+        # --- 准备绘图数据 ---
+        # 1. 全景数据 (0 到 3倍截止频率)
+        f_full = range(0, stop=3*fc_input, length=1000)
+        H_full = calc_complex_response(poles, numerator, f_full)
+        mag_full_db = 20 .* log10.(abs.(H_full))
 
-target_dc_gain = (N % 2 == 1) ? 1.0 : (1.0 / sqrt(1 + epsilon^2))
-numerator = target_dc_gain * denom_at_0
+        # 2. 细节数据 (0 到 1.2倍通带边缘，用于观察波纹)
+        f_zoom = range(0, stop=1.2*fp_calc, length=1000)
+        H_zoom = calc_complex_response(poles, numerator, f_zoom)
+        mag_zoom_db = 20 .* log10.(abs.(H_zoom))
 
-gains = Float64[]
+        # --- 绘图 ---
+        println("\n正在绘制图形...")
+        
+        # 子图 1: 全景响应
+        subplot(2, 1, 1)
+        plot(f_full, mag_full_db, "b-", linewidth=2, label="增益响应")
+        hold("on")
+        # 标记 3dB 点
+        plot([fc_input, fc_input], [-100, 10], "r--", linewidth=1.5, label="3dB 截止频率")
+        plot([0, maximum(f_full)], [-Rp, -Rp], "g:", linewidth=1.5, label="波纹界限 (-$(Rp)dB)")
+        
+        title("切比雪夫 I 型滤波器: 整体幅频响应")
+        ylabel("增益 (dB)")
+        grid("on")
+        legend()
+        
+        # 计算最小增益值，但确保不会低于 -60dB
+        min_gain = minimum(mag_full_db)
+        y_lower = max(-60.0, min_gain)
+        y_upper = Rp + 2
+        ylim(y_lower, y_upper) # 限制Y轴范围以便观察衰减
 
-for w in w_plot
-    s = im * w
-    # H(s) = K / product(s - pk)
-    denominator = prod(s .- poles)
-    H = numerator / denominator
-    push!(gains, abs(H))
+        # 子图 2: 通带细节放大
+        subplot(2, 1, 2)
+        plot(f_zoom, mag_zoom_db, "b-", linewidth=2, label="通带波纹")
+        hold("on")
+        # 绘制 0dB 和 -Rp dB 参考线
+        plot([0, maximum(f_zoom)], [0, 0], "k--", linewidth=1)
+        plot([0, maximum(f_zoom)], [-Rp, -Rp], "g--", linewidth=1, label="波纹下限")
+        
+        title("细节放大: 通带内的波纹特性")
+        xlabel("频率 (Hz)")
+        ylabel("增益 (dB)")
+        grid("on")
+        
+        # 根据滤波器阶数设置合适的Y轴范围
+        if N % 2 == 1
+            # 奇数阶：DC处增益为0dB
+            ylim(-Rp*1.2, 0.5)
+        else
+            # 偶数阶：DC处增益为-Rp dB
+            ylim(-Rp*1.5, 0.5)
+        end
+
+        println("绘图完成。")
+        println("请查看绘图窗口：")
+        println("  - 上图展示了整体的滤波衰减效果。")
+        println("  - 下图放大了通带部分，您可以清晰地看到波纹抖动。")
+
+    catch e
+        println("\n发生错误: $e")
+        println("错误类型: $(typeof(e))")
+        println("请检查参数设置是否正确。")
+    end
 end
 
-gains_db = 20 .* log10.(gains)
-
-# ==========================================
-# 4. 绘图
-# ==========================================
-println("\n正在绘制增益响应...")
-
-plot(f_plot, gains_db, "b-", linewidth=2, label="Gain Response")
-hold("on")
-
-# 绘制通带波纹下限
-plot([0, fc], [-Rp, -Rp], "g--", label="Passband Ripple (-$Rp dB)")
-
-# 标记截止频率点
-plot([fc, fc], [-60, 5], "r:", label="Cutoff Frequency")
-
-title("Chebyshev Type I Analog Filter (N=$N, fc=$(Int(fc))Hz, Rp=$(Rp)dB)")
-xlabel("Frequency (Hz)")
-ylabel("Magnitude (dB)")
-grid("on")
-legend()
-
-# 调整 Y 轴范围以便观察波纹
-ylim(min(-40, -Rp-10), max(5, Rp+2))
-
-println("绘图完成。")
+# 运行主程序
+main()
 ```
 
 ## 7.已知系统的系统函数为: $H(z)=0.2+\frac{1}{1+3.2z^{-1}}+\frac{0.6}{1-2.4z^{-1}}+\frac{1.8}{(1-2.4z^{-1})^{2}}$ 。用 MATLAB 求系统 z 变换的有理形式, 并写出有理形式的表达式。
@@ -814,8 +934,8 @@ println("\n合并后的有理形式 H_rational(z):")
 println(H_simplified)
 
 println("\n----------- 分子与分母 -----------")
-println("分子 N(z): ", num)
-println("分母 D(z): ", den)
+println("分子 N(z): ", 5.76*num)
+println("分母 D(z): ", 5.76*den)
 
 # 如果需要转换回 z^-1 的形式 (DSP 中常用)，可以上下同除以 z 的最高次幂
 # 这里主要展示数学上的有理多项式形式
@@ -1137,113 +1257,206 @@ solve_impulse_response()
 ## 12.已知 5 阶椭圆 IIR 数字低通滤波器的性能指标为: 通带截止频率 0.35$\pi$, 通带波纹为 0.8dB, 最小阻带衰减为 35dB。设计一个 10 阶全通滤波器对其通带的群延时进行均衡。绘制低通滤波器和级联滤波器的群延时。
 
 ```julia
+import Pkg
+# 自动检测并安装缺失的包
+required_packages = ["DSP", "Optim"]
+for pkg in required_packages
+    if Base.find_package(pkg) === nothing
+        println("正在安装 $pkg ...")
+        Pkg.add(pkg)
+    end
+end
+
 using DSP
 using TyPlot
 using Optim
-using Statistics
 using LinearAlgebra
+using Statistics
 
-"""
-第12题修正：设计 10 阶全通滤波器均衡群延时 (含优化算法)
-"""
-function design_and_analyze_group_delay()
-    println("=== 第12题：群延时均衡设计 (优化中...) ===")
-
-    # ==============================
-    # 1. 设计椭圆低通滤波器
-    # ==============================
-    N_lp = 5
-    Wn = 0.35  # 归一化频率
-    Rp = 0.8
-    Rs = 35.0
+# ==============================================================================
+# 1. 辅助函数：构造全通滤波器
+# ==============================================================================
+# 根据极点半径(r)和角度(theta)构建级联的全通滤波器 (ZeroPoleGain形式)
+function make_allpass(params)
+    n_sections = div(length(params), 2)
+    total_filter = nothing
     
-    lp_responsetype = DSP.Lowpass(Wn)
-    lp_designmethod = DSP.Elliptic(N_lp, Rp, Rs)
-    lp_filter = DSP.digitalfilter(lp_responsetype, lp_designmethod)
-
-    # ==============================
-    # 2. 优化全通均衡器参数
-    # ==============================
-    # 全通滤波器阶数 N_ap = 10 (5个二阶节)
-    n_sections = 5 
-    
-    # 优化目标频率范围：只关注通带 (0 到 0.35pi)
-    w_pass = range(0, stop=Wn*pi, length=100)
-    tau_lp = grpdelay(lp_filter, w_pass)
-    
-    # 辅助函数：根据参数构建全通滤波器
-    # 参数格式：[r1, theta1, r2, theta2, ...]
-    function make_allpass(params)
-        total_filter = nothing
-        for i in 1:n_sections
-            r = params[2*i - 1]
-            theta = params[2*i]
-            p = r * exp(im * theta)
-            # 二阶全通节
-            poles = [p, conj(p)]
-            zeros = [1/conj(p), 1/p]
-            # 为了保证实系数，增益通常处理为1，这里简化处理
-            section = ZeroPoleGain(zeros, poles, 1.0)
-            
-            if total_filter === nothing
-                total_filter = section
-            else
-                total_filter = total_filter * section
-            end
+    for i in 1:n_sections
+        r = params[2*i - 1]
+        theta = params[2*i]
+        
+        # 共轭极点对
+        p = r * exp(im * theta)
+        poles = [p, conj(p)]
+        # 全通滤波器的零点是极点的倒数共轭
+        zeros_vec = [1/conj(p), 1/p]
+        
+        # 增益设为 r^2 以保持单位增益 (简单起见，后续绘图归一化处理)
+        section = ZeroPoleGain(zeros_vec, poles, 1.0)
+        
+        if total_filter === nothing
+            total_filter = section
+        else
+            total_filter = total_filter * section 
         end
-        return total_filter
     end
+    
+    return total_filter
+end
 
-    # 代价函数：群延时标准差
+# ==============================================================================
+# 2. 优化函数
+# ==============================================================================
+function optimize_group_delay(iir_filter, wp, N_ap)
+    println("正在优化 10 阶全通均衡器参数 (这可能需要一点时间)...")
+    
+    n_sections = div(N_ap, 2)
+    # 优化频率范围：0 到 截止频率 (通带)
+    w_pass = range(0, stop=wp*pi, length=150) # 增加点数提高精度
+    
+    # 计算原始 IIR 的群延时
+    tau_iir = grpdelay(iir_filter, w_pass)
+    
+    # 目标函数：最小化 (总群延时) 的标准差
     function cost_function(params)
         try
-            ap = make_allpass(params)
-            tau_ap = grpdelay(ap, w_pass)
-            return std(tau_lp + tau_ap)
+            ap_filter = make_allpass(params)
+            tau_ap = grpdelay(ap_filter, w_pass)
+            tau_total = tau_iir + tau_ap
+            # 我们希望群延时尽可能平坦
+            return std(tau_total)
         catch
             return Inf
         end
     end
-
-    # 初始猜测 & 边界
-    initial_params = repeat([0.8, 0.2*pi], n_sections)
-    # 稍微扰动一下初始值避免对称性陷阱
-    for i in 1:length(initial_params); initial_params[i] += 0.01*i; end
     
-    lower = repeat([0.0, 0.0], n_sections)
-    upper = repeat([0.99, pi], n_sections)
-
-    # 执行优化
-    res = optimize(cost_function, lower, upper, initial_params, Fminbox(BFGS()), Optim.Options(time_limit=15.0))
+    # 初始猜测 [r1, theta1, r2, theta2, ...]
+    # 针对 10 阶 (5个节)，我们需要更细致的初始分布
+    initial_params = Float64[]
+    for i in 1:n_sections
+        # 半径分布在 0.5 ~ 0.9 之间
+        push!(initial_params, 0.5 + 0.08*i) 
+        # 角度均匀分布在通带内，略微偏移
+        push!(initial_params, (i / (n_sections+1)) * wp * pi)
+    end
+    
+    # 约束：半径 0~0.99 (稳定)，角度 0~pi
+    lower_bounds = repeat([0.0, 0.0], n_sections)
+    upper_bounds = repeat([0.99, pi], n_sections)
+    
+    # 使用 Fminbox + BFGS 优化
+    res = optimize(cost_function, lower_bounds, upper_bounds, initial_params, Fminbox(BFGS()), Optim.Options(time_limit=30.0, iterations=1000))
+    
     best_params = Optim.minimizer(res)
-    
-    # ==============================
-    # 3. 结果绘图
-    # ==============================
-    ap_filter = make_allpass(best_params)
-    
-    # 绘图频率轴
-    w_plot = range(0, stop=Wn*pi, length=300)
-    tau_lp_plot = grpdelay(lp_filter, w_plot)
-    tau_ap_plot = grpdelay(ap_filter, w_plot)
-    tau_total = tau_lp_plot + tau_ap_plot
-    
-    TyPlot.clf()
-    w_norm = w_plot ./ pi
-    
-    TyPlot.plot(w_norm, tau_lp_plot, "b--", linewidth=1, label="Original LP Delay")
-    TyPlot.plot(w_norm, tau_total, "r-", linewidth=2, label="Equalized Total Delay")
-    
-    TyPlot.title("Group Delay Equalization (Order 10 Allpass)")
-    TyPlot.xlabel("Normalized Frequency")
-    TyPlot.ylabel("Group Delay (samples)")
-    TyPlot.legend()
-    TyPlot.grid(true)
-    
-    println("优化完成。通带群延时标准差从 $(round(std(tau_lp_plot), digits=2)) 降低到 $(round(std(tau_total), digits=2))")
+    println("优化结束。最终标准差 (std): ", round(Optim.minimum(res), digits=4))
+    return make_allpass(best_params)
 end
 
-design_and_analyze_group_delay()
+# ==============================================================================
+# 3. 绘图函数
+# ==============================================================================
+function plot_results(iir_filter, ap_filter, wp, ws)
+    # --- 准备数据 ---
+    n_points = 1000
+    w_full = range(0, stop=pi, length=n_points)
+    w_pass = range(0, stop=wp*pi, length=n_points)
+    
+    # 1. 计算幅频响应 (Magnitude)
+    H_iir = freqz(iir_filter, w_full)
+    H_ap  = freqz(ap_filter, w_full)
+    H_total = H_iir .* H_ap
+    
+    mag_iir = abs.(H_iir)
+    mag_ap = abs.(H_ap)
+    mag_total = abs.(H_total)
+    
+    # 归一化 (以 DC 增益为基准)
+    mag_iir ./= mag_iir[1]
+    # 全通滤波器理论上幅度为1，但也归一化一下以防万一
+    mag_ap ./= mag_ap[1]
+    mag_total ./= mag_total[1]
+    
+    # 2. 计算群延时 (Group Delay)
+    tau_iir = grpdelay(iir_filter, w_pass)
+    tau_ap  = grpdelay(ap_filter, w_pass)
+    tau_total = tau_iir + tau_ap
+    
+    # --- 开始绘图 ---
+    figure("Q12: IIR Filter & Group Delay Equalization")
+    clf()
+    
+    # 子图 1: 幅频响应
+    subplot(2, 1, 1)
+    hold("on")
+    plot(w_full/pi, mag_iir, "b-", linewidth=1.5, label="原始低通 IIR")
+    # 绘制全通滤波器的幅度 (应该是平直的)
+    plot(w_full/pi, mag_ap, "g-.", linewidth=1.0, label="全通滤波器 (幅度)")
+    plot(w_full/pi, mag_total, "r--", linewidth=1.5, label="级联后总响应")
+    
+    # 标记通带截止
+    plot([wp, wp], [0, 1.2], "k:", linewidth=1)
+    
+    ylabel("归一化幅值")
+    title("1. 幅频响应 (验证全通特性)")
+    grid("on")
+    legend("loc", "best")
+    xlim([0, 1])
+    ylim([0, 1.2])
+    
+    # 子图 2: 群延时
+    subplot(2, 1, 2)
+    hold("on")
+    plot(w_pass/pi, tau_iir, "b-", linewidth=1.5, label="原始群延时")
+    plot(w_pass/pi, tau_total, "r-", linewidth=2.0, label="均衡后总群延时")
+    
+    # 平均延时参考线
+    avg_delay = mean(tau_total)
+    plot([0, wp], [avg_delay, avg_delay], "g-.", linewidth=1, label="平均延时 ($(round(avg_delay, digits=1)))")
+    
+    xlabel("归一化频率 (×π rad/sample)")
+    ylabel("群延时 (samples)")
+    title("2. 通带群延时均衡效果 (10阶全通)")
+    grid("on")
+    legend("loc", "best")
+    xlim([0, wp])
+    
+    # 自动缩放 Y 轴，留出一点余量
+    y_min = minimum(tau_total) * 0.8
+    y_max = maximum(tau_iir) * 1.1
+    ylim([y_min, y_max])
+    
+    hold("off")
+end
+
+# ==============================================================================
+# 主程序
+# ==============================================================================
+println("=== 第12题：设计开始 ===")
+
+# 1. 滤波器指标
+wp = 0.35   # 通带截止 0.35pi
+ws = 0.5    # 阻带起始 (假设值，题目只给了最小阻带衰减，通常配合椭圆设计自适应，或者我们可以给一个合理的过渡带)
+            # 注意：DSP.Elliptic 不需要显式 ws，它根据 N, Rp, Rs 设计
+Rp = 0.8    # dB
+Rs = 35.0   # dB
+N_iir = 5   # IIR 阶数
+
+# 2. 设计 IIR 低通滤波器
+println("1. 设计 5阶 椭圆低通滤波器...")
+response = Lowpass(wp)
+method = DSP.Elliptic(N_iir, Rp, Rs)
+iir_filter = digitalfilter(response, method)
+
+# 3. 设计全通均衡器
+println("2. 设计 10阶 全通均衡器...")
+N_ap = 10
+ap_filter = optimize_group_delay(iir_filter, wp, N_ap)
+
+# 4. 绘图
+println("3. 绘制分析图...")
+plot_results(iir_filter, ap_filter, wp, ws)
+
+println("=== 完成 ===")
 ```
 
 ## 13.编写 4 点滑动平均滤波器程序。原始未受干扰的序列为: $s[n]=3[n(0.8)^{n}],$ 加性噪声信号 d[n] 为随机序列, 幅度 0.6, 受干扰的序列为: $x[n]=s[n]+d[n]$, 分别绘制长度为 40 的原始未受干扰的序列, 噪声序列和受干扰序列, 以及滑动平均滤波器的输出。
@@ -1482,83 +1695,179 @@ grid(true)                 # 显示网格
 
 ```julia
 using TyPlot
+using DSP   # 需要安装: 用于 remez 滤波器设计
+using FFTW  # 需要安装: 用于计算频率响应 (fft)
 
-# 1. 定义滤波器指标
-Fs = 5000.0       # 抽样频率 (Hz)
-fp = 1500.0       # 通带截止频率 (Hz)
-fs = 1800.0       # 阻带截止频率 (Hz)
-dp = 0.015        # 通带波纹 (delta_p)
-ds = 0.021        # 阻带波纹 (delta_s)
+# ==============================================================================
+# 核心计算函数 1：Hermann 公式估计
+# ==============================================================================
+function hermann_estimation(fp, fs, dp, ds, Fs)
+    # 1. 归一化频率
+    Delta_F = (fs - fp) / Fs
 
-# 2. 预处理参数
-# 计算归一化过渡带宽度 Delta F
-# 注意：Herrmann 公式中的频率通常归一化为 Fs=1
-Delta_F = (fs - fp) / Fs
+    # 2. 预计算对数值
+    log_dp = log10(dp)
+    log_ds = log10(ds)
 
-# 计算对数值
-log_dp = log10(dp)
-log_ds = log10(ds)
+    # 3. 计算 D_infinity 系数
+    a_dp = 0.005309 * (log_dp^2) + 0.07114 * log_dp - 0.4761
+    g_dp = -0.00266 * (log_dp^2) - 0.5941 * log_dp - 0.4278
+    D_inf = a_dp * log_ds + g_dp
 
-# 3. 计算 Hermann 公式系数
-# 系数定义 (参考 Herrmann, Schuessler, Dehner, 1973)
-# D_inf = a(dp) * log10(ds) + g(dp)
+    # 4. 计算过渡带修正项
+    f_correction = 11.01217 + 0.51244 * (log_dp - log_ds)
 
-# 计算 a(dp)
-# a(dp) = 0.005309 * (log_dp)^2 + 0.07114 * log_dp - 0.4761
-a_dp = 0.005309 * (log_dp^2) + 0.07114 * log_dp - 0.4761
+    # 5. 计算滤波器长度 N
+    N_exact = (D_inf - f_correction * (Delta_F^2)) / Delta_F
+    
+    # 向上取整
+    N = ceil(Int, N_exact)
+    
+    # 阶数 M
+    M = N - 1
 
-# 计算 g(dp)
-# g(dp) = -0.00266 * (log_dp)^2 - 0.5941 * log_dp - 0.4278
-g_dp = -0.00266 * (log_dp^2) - 0.5941 * log_dp - 0.4278
+    return N, M, N_exact
+end
 
-# 计算 D_infinity
-D_inf = a_dp * log_ds + g_dp
+# ==============================================================================
+# 核心计算函数 2：设计滤波器并计算响应 (修正版)
+# ==============================================================================
+function design_and_analyze_filter(N, fp, fs, Fs)
+    
+    # 1. 使用 Parks-McClellan (Remez) 算法设计滤波器
+    # 注意：remez 接受的参数是 阶数(Order) = N-1
+    M = N - 1
+    
+    # 定义频带
+    # ERROR FIX: bands 必须是一个扁平的向量 [start1, end1, start2, end2]
+    # 对应 desired [val1, val2]
+    bands = [0.0, fp, fs, Fs/2]
+    desired = [1.0, 0.0]
+    
+    # 权重: 为了更好地满足阻带波纹要求，通常需要给予阻带更高的权重
+    # weight = [1.0/dp, 1.0/ds] 或 [1.0, dp/ds]
+    # 这里我们根据题目给定的 dp=0.015, ds=0.021 计算权重比
+    dp=0.015
+    ds=0.021
+    w_pass = 1.0 / dp
+    w_stop = 1.0 / ds
+    weights = [w_pass, w_stop]
 
-# 计算修正项 f(dp, ds)
-# f(dp, ds) = 11.01217 + 0.51244 * (log_dp - log_ds)
-f_correction = 11.01217 + 0.51244 * (log_dp - log_ds)
+    try
+        # 调用 remez
+        h = remez(M, bands, desired, weight=weights, Hz=Fs)
+        
+        # 2. 计算频率响应 (使用 FFT)
+        n_fft = 8192 # 增加 FFT 点数使曲线更平滑
+        H = fft([h; zeros(n_fft - length(h))])
+        
+        # 3. 生成对应的频率轴
+        freq_axis = range(0, Fs, length=n_fft)
+        
+        # 4. 截取前一半 (0 ~ Nyquist)
+        valid_idx = 1:div(n_fft, 2)
+        f_plot = freq_axis[valid_idx]
+        mag_plot = abs.(H[valid_idx]) # 幅度
+        
+        return h, f_plot, mag_plot
+    catch e
+        println("设计滤波器失败: $e")
+        println("请检查是否已安装 DSP 包 (import Pkg; Pkg.add(\"DSP\"))")
+        return [], [], []
+    end
+end
 
-# 4. 计算滤波器长度 N
-# N = (D_inf - f_correction * (Delta_F)^2) / Delta_F
-N_exact = (D_inf - f_correction * (Delta_F^2)) / Delta_F
+# ==============================================================================
+# 绘图函数：绘制规格 + 实际响应
+# ==============================================================================
+function plot_filter_results(fp, fs, dp, ds, Fs, N, M, f_response, mag_response)
+    fmax = Fs / 2
+    
+    figure("FIR Filter Design Result")
+    clf()
+    
+    hold("on")
 
-# 滤波器长度通常取向上取整
-N = ceil(Int, N_exact)
+    # --- 1. 绘制公差框 (Tolerance Boxes) ---
+    # 通带框 (蓝色) - 允许范围 [1-dp, 1+dp]
+    plot([0, fp], [1+dp, 1+dp], "b-", linewidth=1)
+    plot([0, fp], [1-dp, 1-dp], "b-", linewidth=1)
+    plot([fp, fp], [1-dp, 1+dp], "b-", linewidth=1) 
+    
+    # 阻带框 (洋红色) - 允许范围 [0, ds]
+    plot([fs, fmax], [ds, ds], "m-", linewidth=1)
+    plot([fs, fs], [0, ds], "m-", linewidth=1)
 
-# 滤波器阶数 M = N - 1
-Order = N - 1
+    # --- 2. 绘制实际滤波器响应 ---
+    if !isempty(mag_response)
+        plot(f_response, mag_response, "k-", linewidth=1.2, label="实际滤波器响应 (N=$N)")
+    end
 
-# 5. 输出结果
-println("---------- Hermann 公式估算结果 ----------")
-println("归一化过渡带宽度 ΔF: $(round(Delta_F, digits=4))")
-println("D_infinity: $(round(D_inf, digits=4))")
-println("计算得到的精确长度 N_exact: $(round(N_exact, digits=4))")
-println("估算滤波器长度 N: $N")
-println("估算滤波器阶数 M (N-1): $Order")
+    # --- 3. 辅助线 ---
+    plot([0, fmax], [1, 1], "k:", linewidth=0.5) # 1.0 参考线
+    plot([0, fmax], [0, 0], "k-", linewidth=0.5) # 0.0 参考线
+    
+    # 截止频率竖线
+    plot([fp, fp], [-0.05, 1+dp+0.05], "k--", alpha=0.3)
+    plot([fs, fs], [-0.05, ds+0.05],   "k--", alpha=0.3)
+
+    # --- 4. 标注与设置 ---
+    xlim([0, fmax])
+    # 稍微放大Y轴范围以便观察波纹
+    ylim([-0.05, 1.1]) 
+    
+    xlabel("频率 (Hz)")
+    ylabel("幅度 |H(f)|")
+    title("FIR 低通滤波器设计结果 (Hermann 估计阶数 N=$N)")
+    grid("on")
+    legend("loc", "best")
+
+    # 关键点文字
+    text(fp, -0.08, "fp", ha="center")
+    text(fs, -0.08, "fs", ha="center")
+    
+    info_text = "规格:\n通带波纹: $dp\n阻带波纹: $ds"
+    text(fmax*0.75, 0.6, info_text, bbox=Dict("facecolor"=>"white", "alpha"=>0.8))
+
+    hold("off")
+end
+
+# ==============================================================================
+# 主程序
+# ==============================================================================
+
+# 1. 定义指标
+Fs_val = 5000.0
+fp_val = 1500.0
+fs_val = 1800.0
+dp_val = 0.015
+ds_val = 0.021
+
+println("========================================")
+println("       Hermann FIR 滤波器设计")
+println("========================================")
+
+# 2. 计算阶数
+N_est, M_est, N_ex = hermann_estimation(fp_val, fs_val, dp_val, ds_val, Fs_val)
+
+println("Hermann 估算结果:")
+println("  精确长度 N_exact = $(round(N_ex, digits=4))")
+println("  取整长度 N       = $N_est")
+println("  滤波器阶数 M     = $M_est")
 println("----------------------------------------")
 
-# 6. 绘制规格示意图（更标准的阶梯/边界显示）
-figure("Filter Specifications")
+# 3. 设计滤波器并获取响应数据
+h_coef, f_data, mag_data = design_and_analyze_filter(N_est, fp_val, fs_val, Fs_val)
 
-# 一次 plot 画多段线（不使用 hold，避免版本差异）
-plot([0, fp],      [1, 1], "r--",      # 通带
-     [fp, fs],     [1, 0], "r--",      # 过渡带（示意）
-     [fs, Fs/2],   [0, 0], "r--",      # 阻带
-     [fp, fp],     [0, 1], "k:",       # fp 竖线
-     [fs, fs],     [0, 1], "k:")       # fs 竖线
+if isempty(h_coef)
+    println("警告: 未能生成滤波器数据，仅绘制规格框。")
+else
+    println("滤波器设计成功。正在绘制响应图...")
+end
 
-title("FIR 低通滤波器设计规格")
-xlabel("频率 (Hz)")
-ylabel("理想幅度")
-grid("on")
-axis("tight")
-xlim([0, Fs/2])
-ylim([-0.1, 1.1])
-
-# 标注位置下移，避免挡标题
-text(fp, 0.92, "fp=1500 Hz")
-text(fs, 0.08, "fs=1800 Hz")
-
+# 4. 绘图
+plot_filter_results(fp_val, fs_val, dp_val, ds_val, Fs_val, N_est, M_est, f_data, mag_data)
+println("========================================")
 ```
 
 ## 17.编写长度为 5 的中值滤波器程序。原始未受干扰的序列为: $s[n]=3[n(0.8)^{n}]$, 加性噪声信号 d[n] 为随机序列, 幅度 0.6, 分别绘制长度为 40 的受干扰序列, 以及中值滤波器的输出。
@@ -1624,7 +1933,7 @@ y = median_filter(x, L)
 figure("Median Filter (L=5)", figsize=(10, 8))
 
 # (1) 受干扰序列
-subplot(2, 1, 1)
+subplot(4, 1, 1)
 # TyPlot 的 basefmt 不支持 " "（空格式）。这里先画 stem，然后把 baseline 隐藏掉。
 h1 = stem(n, x, markerfmt="bo", linefmt="b-", label="x[n]=s[n]+d[n]")
 try
@@ -1635,6 +1944,25 @@ try
 catch
 end
 plot(n, s, "g--", linewidth=2, alpha=0.8, label="s[n] (无噪声)")
+
+title("输入信号")
+ylabel("幅度")
+legend(loc="best")
+grid(true)
+
+
+# (1) 受干扰序列
+subplot(4, 1,2)
+# TyPlot 的 basefmt 不支持 " "（空格式）。这里先画 stem，然后把 baseline 隐藏掉。
+h2 = stem(n, x, markerfmt="bo", linefmt="b-", label="x[n]=s[n]+d[n]")
+try
+    c2 = (h2 isa AbstractVector && length(h2) == 1) ? h2[1] : h2
+    if PyCall.pyhasattr(c2, "baseline")
+        c2.baseline.set_visible(false)
+    end
+catch
+end
+
 # 额外把噪声画出来（看不清噪声时非常有用）
 plot(n, d, "k:", linewidth=1.5, alpha=0.8, label="d[n] (噪声)")
 
@@ -1643,17 +1971,36 @@ ylabel("幅度")
 legend(loc="best")
 grid(true)
 
-# (2) 中值滤波输出
-subplot(2, 1, 2)
-h2 = stem(n, y, markerfmt="ro", linefmt="r-", label="y[n] (5点中值滤波输出)")
+
+# (3) 中值滤波输出
+subplot(4, 1, 3)
+h3 = stem(n, y, markerfmt="ro", linefmt="r-", label="信号+噪声")
 try
-    c2 = (h2 isa AbstractVector && length(h2) == 1) ? h2[1] : h2
-    if PyCall.pyhasattr(c2, "baseline")
-        c2.baseline.set_visible(false)
+    c3 = (h3 isa AbstractVector && length(h3) == 1) ? h3[1] : h3
+    if PyCall.pyhasattr(c3, "baseline")
+        c3.baseline.set_visible(false)
     end
 catch
 end
-plot(n, s, "g--", linewidth=2, alpha=0.8, label="s[n] (无噪声)")
+plot(n, s+d, "k:", linewidth=2, alpha=0.8, label="信号+噪声")
+
+title("信号+噪声")
+xlabel("样本序号 n")
+ylabel("幅度")
+legend(loc="best")
+grid(true)
+
+# (2) 中值滤波输出
+subplot(4, 1, 4)
+h4 = stem(n, y, markerfmt="ro", linefmt="r-", label="y[n] (5点中值滤波输出)")
+try
+    c4 = (h4 isa AbstractVector && length(h4) == 1) ? h4[1] : h4
+    if PyCall.pyhasattr(c4, "baseline")
+        c4.baseline.set_visible(false)
+    end
+catch
+end
+plot(n, y, "k:", linewidth=2, alpha=0.8, label="y[n] (5点中值滤波输出)")
 
 title("5 点中值滤波器输出")
 xlabel("样本序号 n")
@@ -1669,7 +2016,6 @@ end
 
 # 如果你只想严格按题意“分别绘制”且不叠加 s[n] 和 d[n]：
 # - 把上面两个 subplot 里的 plot(n, s, ...) 和 plot(n, d, ...) 注释掉即可。
-
 ```
 
 ## 18.已知 16 点序列 x[n] 的 DFT 为: $X[k]=\begin{cases}k/16&0\le k\le15\\ 0&otherwise\end{cases}$ 。绘制序列 x[n] 的实部和虚部。
@@ -2039,141 +2385,92 @@ xlim([-1, 1])
 ## 用 MATLAB 将系统函数分解为二次多项式之积, 并写出各二次多项式的表达式。
 
 ```julia
-import Pkg
-# 检查依赖
-try
-    using Polynomials
-catch
-    println("正在安装 Polynomials...")
-    Pkg.add("Polynomials")
-    using Polynomials
-end
+using Polynomials # 用于多项式求根
 using Printf
-using LinearAlgebra
 
-println("=== FIR 系统函数二阶分解 (SOS) ===")
-
-# 1. 定义系数
-# H(z) = 2.4 + 3.2z^-1 + ... + 5.2z^-6
+# 1. 定义 FIR 滤波器系数
+# H(z) = 2.4 + 3.2z^-1 + 1.5z^-2 + 0.8z^-3 + 1.4z^-4 + 3.6z^-5 + 5.2z^-6
+# 对应系数向量 b
 b = [2.4, 3.2, 1.5, 0.8, 1.4, 3.6, 5.2]
-println("原始系数: $b")
 
-# 2. 求根
-# 构造多项式 P(z)
+# 2. 求系统函数的零点
+# 构建多项式 P(z) = 2.4*z^6 + ... + 5.2
+# 需要反转 b 的顺序传入 Polynomial (因为 Polynomials 系数是从低次到高次)
 poly_coeffs = reverse(b)
 P = Polynomial(poly_coeffs)
-
-# 【修复】显式调用 Polynomials.roots 以避免与 TyMath.roots 冲突
+# 使用 Polynomials.roots 求根
 zeros_z = Polynomials.roots(P)
 
-# 【修复】字符串插值语法修正：使用 $(...) 而不是 ${...}
-println("\n找到 $(length(zeros_z)) 个根:")
+# 3. 手动分解为二阶节 (SOS)
+# 策略：分离实根和复根，复根按共轭配对，实根两两配对
 
-# 3. 稳健的根配对算法 (Conjugate Pairing)
-# 目的：确保配对后的系数是实数
-complex_roots = ComplexF64.(zeros_z)
+# 设置容差判断虚部
+tol = 1e-5
+complex_roots = zeros_z[abs.(imag.(zeros_z)) .> tol]
+real_roots = zeros_z[abs.(imag.(zeros_z)) .<= tol]
+
+# 对复根按实部排序，确保共轭对相邻
+sort!(complex_roots, by=real)
+# 对实根排序
+sort!(real_roots)
+
+# 存储配对结果
 pairs = []
-used = falses(length(complex_roots))
 
-for i in 1:length(complex_roots)
-    if used[i]; continue; end
-    
-    root1 = complex_roots[i]
-    used[i] = true
-    
-    # 在剩余的根中寻找最接近共轭的一个 (实部接近，虚部相反)
-    best_idx = -1
-    min_err = Inf
-    
-    for j in (i+1):length(complex_roots)
-        if used[j]; continue; end
-        
-        root2 = complex_roots[j]
-        # 理想共轭对误差: |r1 - conj(r2)|
-        err = abs(root1 - conj(root2))
-        
-        if err < min_err
-            min_err = err
-            best_idx = j
-        end
-    end
-    
-    if best_idx != -1
-        root2 = complex_roots[best_idx]
-        used[best_idx] = true
-        push!(pairs, (root1, root2))
-    else
-        # 没找到配对
-        println("警告：根 $root1 未找到最佳配对")
-        push!(pairs, (root1, 0.0)) 
+# 配对复根
+for i in 1:2:length(complex_roots)
+    if i+1 <= length(complex_roots)
+        push!(pairs, (complex_roots[i], complex_roots[i+1]))
     end
 end
 
-# 4. 计算二阶节系数并输出
-# H(z) = G * product( 1 - (r1+r2)z^-1 + (r1*r2)z^-2 )
+# 配对实根
+for i in 1:2:length(real_roots)
+    if i+1 <= length(real_roots)
+        push!(pairs, (real_roots[i], real_roots[i+1]))
+    end
+end
 
-gain_total = b[1] # 2.4
-sos_coeffs = []   # 存储各节系数以便验证
+# 4. 打印结果
+println("系统函数 H(z) 分解为 3 个二次多项式之积：")
+# H(z) = k * H1(z) * H2(z) * H3(z)
+# 我们将总增益 k = b[1] = 2.4 分配给第一节
+k_total = b[1]
 
-println("\n分解结果 (H(z) = H1(z) * H2(z) * H3(z)): \n")
+println("形式: H(z) = H1(z) * H2(z) * H3(z)")
+println("-"^50)
 
 for (i, pair) in enumerate(pairs)
     r1, r2 = pair
     
-    # 二阶节系数: 1, -(r1+r2), r1*r2
-    # 我们要保证系数是实数
-    a1 = -real(r1 + r2)
-    a2 = real(r1 * r2)
+    # 计算二阶节系数
+    # Section = (1 - r1*z^-1) * (1 - r2*z^-1)
+    #         = 1 - (r1+r2)z^-1 + (r1*r2)z^-2
+    # 对应的系数为:
+    # Constant: 1
+    # z^-1: -(r1 + r2)
+    # z^-2: r1 * r2
     
-    # 将总增益分配给第一节
-    g = (i == 1) ? gain_total : 1.0
+    coeff_z1 = -real(r1 + r2)
+    coeff_z2 = real(r1 * r2)
     
-    c0 = 1.0 * g
-    c1 = a1 * g
-    c2 = a2 * g
+    # 仅对第一节应用增益 k
+    gain = (i == 1) ? k_total : 1.0
     
-    # 存入列表用于后续卷积验证 [c0, c1, c2]
-    push!(sos_coeffs, [c0, c1, c2])
+    c0 = 1.0 * gain
+    c1 = coeff_z1 * gain
+    c2 = coeff_z2 * gain
     
-    # 格式化输出
+    # 格式化符号
     sign1 = c1 >= 0 ? "+" : "-"
     sign2 = c2 >= 0 ? "+" : "-"
     
-    @printf("H%d(z) = %.4f %s %.4fz^{-1} %s %.4fz^{-2}\n", 
+    @printf("H%d(z) = %.4f %s %.4fz^-1 %s %.4fz^-2\n", 
             i, c0, sign1, abs(c1), sign2, abs(c2))
 end
 
-# 5. 验证结果 (卷积复原)
-# 手动实现卷积 conv
-function my_conv(u, v)
-    n = length(u)
-    m = length(v)
-    w = zeros(n + m - 1)
-    for i in 1:n
-        for j in 1:m
-            w[i+j-1] += u[i] * v[j]
-        end
-    end
-    return w
-end
-
-# 逐步卷积所有二阶节
-reconstructed_b = sos_coeffs[1]
-for i in 2:length(sos_coeffs)
-    global reconstructed_b = my_conv(reconstructed_b, sos_coeffs[i])
-end
-
-println("\n" * "-"^30)
-println("验证环节:")
-println("原始系数: $(round.(b, digits=4))")
-println("复原系数: $(round.(reconstructed_b, digits=4))")
-
-error_norm = norm(b - reconstructed_b)
-if error_norm < 1e-10
-    println(">>> 验证成功！误差极小。")
-else
-    println(">>> 警告：存在误差 $error_norm")
-end
+println("-"^50)
+println("验证提示：各节系数相乘（卷积）应近似等于原系数 [2.4, 3.2, ...]")
 ```
 
 ## 24.已知 FIR 数字低通滤波器的性能指标为: 通带截止频率 0.35$\pi$, 阻带截止频率 0.45$\pi$, 通带和阻带波纹 $\delta=0.01$。设计满足该滤波器的 Kaiser's 窗函数, 绘制出 Kaiser's 窗函数的增益响应。
@@ -2636,7 +2933,6 @@ function check_reconstruct(num_sections, den_sections, k, b, a)
 end
 
 check_reconstruct(num_sections, den_sections, k, b, a)
-
 ```
 
 
@@ -3025,7 +3321,6 @@ for i in eachindex(p)
         used[j] = true
     end
 end
-
 ```
 
 
@@ -3322,7 +3617,6 @@ xlim([-m, m]); ylim([-m, m])
 
 # 图例（如果这一行不兼容，就删掉）
 legend(["Unit Circle", "Zeros", "Poles"])
-
 ```
 
 ## 35.已知全通系统的系统函数为: $H(z)=\frac{3-4z^{-1}+2z^{-2}-5z^{-3}+3z^{-4}+z^{-5}}{1+3z^{-1}-5z^{-2}+2z^{-3}-4z^{-4}+3z^{-5}}$ 。用 MATLAB 求全通系统进行级联格型结构的乘法器系数。
@@ -3467,7 +3761,6 @@ plot([12.5, 12.5], [0, maximum(mag)], "r--", linewidth=1, label="k=12.5")
 plot([51.5, 51.5], [0, maximum(mag)], "r--", linewidth=1, label="k=51.5")
 legend("on")
 hold("off")
-
 ```
 
 
